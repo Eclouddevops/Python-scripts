@@ -2,13 +2,18 @@
 """
 AWS EC2 Instance Manager Script
 - Prompts for AWS account (profile), region, and EC2 instance name
+- Option to CREATE a new EC2 instance (type, name, tags, key pair, AMI, etc.)
 - Checks instance state; offers to start if stopped
+- Retrieves SSH private key from AWS Secrets Manager for secure access
 - SSHs into the instance
 - After SSH session ends, offers to stop the instance
 """
 
+import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -19,8 +24,13 @@ except ImportError:
     sys.exit(1)
 
 
+# =============================================================================
+# USER INPUT & SESSION SETUP
+# =============================================================================
+
+
 def get_user_input():
-    """Gather AWS account profile, region, and instance name from user."""
+    """Gather AWS account profile, region from user."""
     print("=" * 60)
     print("       AWS EC2 Instance Manager & SSH Connector")
     print("=" * 60)
@@ -35,20 +45,28 @@ def get_user_input():
         print("Error: Region is required.")
         sys.exit(1)
 
-    instance_name = input("Enter EC2 instance Name tag: ").strip()
-    if not instance_name:
-        print("Error: Instance name is required.")
-        sys.exit(1)
-
-    return aws_profile, region, instance_name
+    return aws_profile, region
 
 
-def create_ec2_client(aws_profile, region):
-    """Create an EC2 client using the specified profile and region."""
+def get_main_action():
+    """Ask the user what they want to do."""
+    print("\nWhat would you like to do?")
+    print("  1. Connect to an existing EC2 instance")
+    print("  2. Create a new EC2 instance")
+    print()
+
+    while True:
+        choice = input("Enter your choice (1 or 2): ").strip()
+        if choice in ("1", "2"):
+            return choice
+        print("Please enter 1 or 2.")
+
+
+def create_session(aws_profile, region):
+    """Create a boto3 session with the specified profile and region."""
     try:
         session = boto3.Session(profile_name=aws_profile, region_name=region)
-        ec2_client = session.client("ec2")
-        return ec2_client
+        return session
     except ProfileNotFound:
         print(f"Error: AWS profile '{aws_profile}' not found.")
         print("Available profiles can be configured in ~/.aws/credentials")
@@ -57,6 +75,363 @@ def create_ec2_client(aws_profile, region):
         print("Error: No AWS credentials found.")
         print("Configure credentials using 'aws configure' or set environment variables.")
         sys.exit(1)
+
+
+# =============================================================================
+# AWS SECRETS MANAGER - SSH KEY RETRIEVAL
+# =============================================================================
+
+
+def get_ssh_key_from_secrets_manager(session, secret_name):
+    """
+    Retrieve SSH private key from AWS Secrets Manager.
+
+    The secret can be stored as:
+    - Plain text (the PEM key content directly)
+    - JSON with a key like 'private_key', 'ssh_key', or 'pem'
+    """
+    print(f"\nRetrieving SSH key from Secrets Manager: '{secret_name}'...")
+
+    try:
+        sm_client = session.client("secretsmanager")
+        response = sm_client.get_secret_value(SecretId=secret_name)
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        if error_code == "ResourceNotFoundException":
+            print(f"Error: Secret '{secret_name}' not found in Secrets Manager.")
+        elif error_code == "AccessDeniedException":
+            print(f"Error: Access denied to secret '{secret_name}'.")
+            print("Ensure your IAM role/user has secretsmanager:GetSecretValue permission.")
+        elif error_code == "InvalidRequestException":
+            print(f"Error: Invalid request for secret '{secret_name}'.")
+        else:
+            print(f"Error retrieving secret: {e}")
+        return None
+
+    # Extract the secret value
+    if "SecretString" in response:
+        secret_value = response["SecretString"]
+    else:
+        # Binary secret
+        import base64
+        secret_value = base64.b64decode(response["SecretBinary"]).decode("utf-8")
+
+    # Try to parse as JSON first
+    try:
+        secret_json = json.loads(secret_value)
+        # Look for common key names
+        key_names = ["private_key", "ssh_key", "pem", "key", "ssh_private_key", "ec2_key"]
+        for key_name in key_names:
+            if key_name in secret_json:
+                print(f"  Found SSH key in JSON field: '{key_name}'")
+                return secret_json[key_name]
+        # If none of the common names found, show available keys
+        print(f"  Available keys in secret: {list(secret_json.keys())}")
+        field = input("  Enter the JSON field name containing the SSH key: ").strip()
+        if field in secret_json:
+            return secret_json[field]
+        else:
+            print(f"  Error: Field '{field}' not found in secret.")
+            return None
+    except (json.JSONDecodeError, TypeError):
+        # Not JSON, treat as plain text PEM key
+        if "BEGIN" in secret_value and "KEY" in secret_value:
+            print("  Found SSH key as plain text PEM.")
+            return secret_value
+        else:
+            print("  Error: Secret does not appear to contain a valid SSH key.")
+            return None
+
+
+def write_temp_key_file(key_content):
+    """Write SSH key content to a secure temporary file."""
+    try:
+        tmp_file = tempfile.NamedTemporaryFile(
+            mode="w", prefix="ec2_ssh_key_", suffix=".pem", delete=False
+        )
+        tmp_file.write(key_content)
+        # Ensure key ends with newline
+        if not key_content.endswith("\n"):
+            tmp_file.write("\n")
+        tmp_file.close()
+
+        # Set strict permissions (required by SSH)
+        os.chmod(tmp_file.name, 0o600)
+
+        return tmp_file.name
+    except Exception as e:
+        print(f"Error writing temporary key file: {e}")
+        return None
+
+
+def cleanup_temp_key(key_path):
+    """Securely remove the temporary key file."""
+    try:
+        if key_path and os.path.exists(key_path):
+            os.remove(key_path)
+            print("  Temporary SSH key file removed.")
+    except Exception:
+        print(f"  Warning: Could not remove temp key file: {key_path}")
+        print("  Please delete it manually for security.")
+
+
+# =============================================================================
+# EC2 INSTANCE CREATION
+# =============================================================================
+
+
+def get_create_instance_input(session):
+    """Gather all details needed to create a new EC2 instance."""
+    print("\n" + "=" * 60)
+    print("  Create New EC2 Instance")
+    print("=" * 60)
+
+    ec2_client = session.client("ec2")
+
+    # Instance Name
+    instance_name = input("\nEnter instance Name: ").strip()
+    if not instance_name:
+        print("Error: Instance name is required.")
+        sys.exit(1)
+
+    # Instance Type
+    print("\nCommon instance types:")
+    print("  t2.micro (Free tier), t2.small, t2.medium, t3.micro, t3.small")
+    print("  m5.large, m5.xlarge, c5.large, r5.large")
+    instance_type = input("Enter instance type [t2.micro]: ").strip()
+    if not instance_type:
+        instance_type = "t2.micro"
+
+    # AMI ID
+    print("\nEnter AMI ID or press Enter to use latest Amazon Linux 2023:")
+    ami_id = input("AMI ID: ").strip()
+    if not ami_id:
+        ami_id = get_latest_amazon_linux_ami(ec2_client)
+        if ami_id:
+            print(f"  Using AMI: {ami_id}")
+        else:
+            print("Error: Could not find Amazon Linux AMI. Please provide an AMI ID.")
+            ami_id = input("AMI ID (required): ").strip()
+            if not ami_id:
+                sys.exit(1)
+
+    # Key Pair
+    print("\nAvailable Key Pairs:")
+    list_key_pairs(ec2_client)
+    key_pair_name = input("Enter Key Pair name (or 'new' to create one): ").strip()
+    if key_pair_name.lower() == "new":
+        key_pair_name = create_new_key_pair(session)
+    elif not key_pair_name:
+        print("Error: Key Pair name is required for SSH access.")
+        sys.exit(1)
+
+    # Security Group
+    print("\nAvailable Security Groups:")
+    list_security_groups(ec2_client)
+    sg_input = input("Enter Security Group ID(s) (comma-separated) or press Enter for default: ").strip()
+    security_group_ids = []
+    if sg_input:
+        security_group_ids = [sg.strip() for sg in sg_input.split(",")]
+
+    # Subnet (optional)
+    subnet_id = input("\nEnter Subnet ID (or press Enter for default VPC subnet): ").strip()
+
+    # Tags
+    print("\nAdditional tags (key=value format, one per line, empty line to finish):")
+    print("  Example: Environment=Development")
+    print("  Example: Team=DevOps")
+    tags = [{"Key": "Name", "Value": instance_name}]
+    while True:
+        tag_input = input("  Tag: ").strip()
+        if not tag_input:
+            break
+        if "=" in tag_input:
+            key, value = tag_input.split("=", 1)
+            tags.append({"Key": key.strip(), "Value": value.strip()})
+        else:
+            print("  Invalid format. Use key=value")
+
+    # Secrets Manager secret name for SSH key
+    print("\n--- SSH Key Storage in AWS Secrets Manager ---")
+    print("Store the SSH private key in Secrets Manager for secure access.")
+    secret_name = input("Enter Secrets Manager secret name for SSH key (e.g., ec2/my-server/ssh-key): ").strip()
+    if not secret_name:
+        secret_name = f"ec2/{instance_name}/ssh-key"
+        print(f"  Using default secret name: {secret_name}")
+
+    return {
+        "instance_name": instance_name,
+        "instance_type": instance_type,
+        "ami_id": ami_id,
+        "key_pair_name": key_pair_name,
+        "security_group_ids": security_group_ids,
+        "subnet_id": subnet_id,
+        "tags": tags,
+        "secret_name": secret_name,
+    }
+
+
+def get_latest_amazon_linux_ami(ec2_client):
+    """Get the latest Amazon Linux 2023 AMI ID."""
+    try:
+        response = ec2_client.describe_images(
+            Owners=["amazon"],
+            Filters=[
+                {"Name": "name", "Values": ["al2023-ami-2023*-x86_64"]},
+                {"Name": "state", "Values": ["available"]},
+                {"Name": "architecture", "Values": ["x86_64"]},
+            ],
+        )
+        images = sorted(
+            response["Images"], key=lambda x: x["CreationDate"], reverse=True
+        )
+        if images:
+            return images[0]["ImageId"]
+    except ClientError:
+        pass
+    return None
+
+
+def list_key_pairs(ec2_client):
+    """List available key pairs."""
+    try:
+        response = ec2_client.describe_key_pairs()
+        if response["KeyPairs"]:
+            for kp in response["KeyPairs"][:10]:
+                print(f"  - {kp['KeyName']}")
+        else:
+            print("  (No key pairs found)")
+    except ClientError as e:
+        print(f"  Error listing key pairs: {e}")
+
+
+def list_security_groups(ec2_client):
+    """List available security groups."""
+    try:
+        response = ec2_client.describe_security_groups()
+        for sg in response["SecurityGroups"][:10]:
+            print(f"  - {sg['GroupId']}  ({sg['GroupName']})")
+    except ClientError as e:
+        print(f"  Error listing security groups: {e}")
+
+
+def create_new_key_pair(session):
+    """Create a new key pair and store private key in Secrets Manager."""
+    ec2_client = session.client("ec2")
+
+    key_name = input("Enter new Key Pair name: ").strip()
+    if not key_name:
+        print("Error: Key pair name is required.")
+        sys.exit(1)
+
+    try:
+        response = ec2_client.create_key_pair(KeyName=key_name)
+        private_key = response["KeyMaterial"]
+        print(f"  Key pair '{key_name}' created successfully!")
+
+        # Store in Secrets Manager
+        store_in_secrets = confirm("Store private key in AWS Secrets Manager?")
+        if store_in_secrets:
+            sm_client = session.client("secretsmanager")
+            secret_name = f"ec2/keypair/{key_name}"
+            try:
+                sm_client.create_secret(
+                    Name=secret_name,
+                    Description=f"SSH private key for EC2 key pair: {key_name}",
+                    SecretString=json.dumps({"private_key": private_key}),
+                    Tags=[
+                        {"Key": "ManagedBy", "Value": "ec2-manager-script"},
+                        {"Key": "KeyPairName", "Value": key_name},
+                    ],
+                )
+                print(f"  Private key stored in Secrets Manager as: '{secret_name}'")
+            except ClientError as e:
+                print(f"  Warning: Could not store in Secrets Manager: {e}")
+                print(f"  Saving key locally to: {key_name}.pem")
+                with open(f"{key_name}.pem", "w") as f:
+                    f.write(private_key)
+                os.chmod(f"{key_name}.pem", 0o600)
+        else:
+            # Save locally
+            with open(f"{key_name}.pem", "w") as f:
+                f.write(private_key)
+            os.chmod(f"{key_name}.pem", 0o600)
+            print(f"  Private key saved to: {key_name}.pem")
+
+        return key_name
+    except ClientError as e:
+        print(f"Error creating key pair: {e}")
+        sys.exit(1)
+
+
+def create_ec2_instance(session, config):
+    """Create a new EC2 instance with the given configuration."""
+    ec2_client = session.client("ec2")
+
+    print(f"\n  Creating EC2 instance...")
+    print(f"  Name        : {config['instance_name']}")
+    print(f"  Type        : {config['instance_type']}")
+    print(f"  AMI         : {config['ami_id']}")
+    print(f"  Key Pair    : {config['key_pair_name']}")
+    print(f"  Tags        : {len(config['tags'])} tag(s)")
+
+    launch_params = {
+        "ImageId": config["ami_id"],
+        "InstanceType": config["instance_type"],
+        "KeyName": config["key_pair_name"],
+        "MinCount": 1,
+        "MaxCount": 1,
+        "TagSpecifications": [
+            {"ResourceType": "instance", "Tags": config["tags"]}
+        ],
+    }
+
+    if config["security_group_ids"]:
+        launch_params["SecurityGroupIds"] = config["security_group_ids"]
+
+    if config["subnet_id"]:
+        launch_params["SubnetId"] = config["subnet_id"]
+
+    try:
+        response = ec2_client.run_instances(**launch_params)
+        instance = response["Instances"][0]
+        instance_id = instance["InstanceId"]
+        print(f"\n  Instance created! ID: {instance_id}")
+        print("  Waiting for instance to be running...")
+
+        waiter = ec2_client.get_waiter("instance_running")
+        waiter.wait(
+            InstanceIds=[instance_id],
+            WaiterConfig={"Delay": 5, "MaxAttempts": 60},
+        )
+        print("  Instance is running!")
+
+        # Wait for status checks
+        print("  Waiting for status checks to pass...")
+        status_waiter = ec2_client.get_waiter("instance_status_ok")
+        try:
+            status_waiter.wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={"Delay": 10, "MaxAttempts": 60},
+            )
+            print("  Status checks passed!")
+        except Exception:
+            print("  Warning: Status checks timed out, but instance is running.")
+
+        # Get instance details
+        desc_response = ec2_client.describe_instances(InstanceIds=[instance_id])
+        instance_info = desc_response["Reservations"][0]["Instances"][0]
+
+        return instance_info
+
+    except ClientError as e:
+        print(f"Error creating instance: {e}")
+        sys.exit(1)
+
+
+# =============================================================================
+# EC2 INSTANCE MANAGEMENT
+# =============================================================================
 
 
 def find_instance_by_name(ec2_client, instance_name):
@@ -126,7 +501,7 @@ def start_instance(ec2_client, instance_id, instance_name):
 
     print("Instance is now running!")
 
-    # Wait a bit more for the instance to be fully initialized
+    # Wait for status checks
     print("Waiting for instance status checks to pass...")
     status_waiter = ec2_client.get_waiter("instance_status_ok")
     try:
@@ -164,17 +539,13 @@ def stop_instance(ec2_client, instance_id, instance_name):
     print("Instance has been stopped successfully.")
 
 
-def ssh_to_instance(public_ip):
-    """SSH into the EC2 instance."""
-    ssh_user = input("\nEnter SSH username (e.g., ec2-user, ubuntu, admin) [ec2-user]: ").strip()
-    if not ssh_user:
-        ssh_user = "ec2-user"
+# =============================================================================
+# SSH CONNECTION
+# =============================================================================
 
-    key_path = input("Enter path to SSH private key file (e.g., ~/.ssh/my-key.pem): ").strip()
-    if not key_path:
-        print("Error: SSH key path is required.")
-        return False
 
+def ssh_to_instance(public_ip, key_path, ssh_user):
+    """SSH into the EC2 instance using the provided key file."""
     print(f"\nConnecting to {public_ip} as {ssh_user}...")
     print("(Type 'exit' or press Ctrl+D to disconnect)\n")
     print("-" * 60)
@@ -199,6 +570,11 @@ def ssh_to_instance(public_ip):
         return True
 
 
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
+
 def confirm(prompt):
     """Ask user for yes/no confirmation."""
     while True:
@@ -211,48 +587,137 @@ def confirm(prompt):
             print("Please enter 'yes' or 'no'.")
 
 
+def get_ssh_credentials(session):
+    """Get SSH username and key (from Secrets Manager or local file)."""
+    print("\n--- SSH Access Configuration ---")
+    print("  1. Retrieve SSH key from AWS Secrets Manager (recommended)")
+    print("  2. Use local SSH key file")
+    print()
+
+    while True:
+        choice = input("Choose SSH key source (1 or 2): ").strip()
+        if choice in ("1", "2"):
+            break
+        print("Please enter 1 or 2.")
+
+    ssh_user = input("\nEnter SSH username (e.g., ec2-user, ubuntu, admin) [ec2-user]: ").strip()
+    if not ssh_user:
+        ssh_user = "ec2-user"
+
+    key_path = None
+    temp_key = False
+
+    if choice == "1":
+        # Retrieve from Secrets Manager
+        secret_name = input("Enter Secrets Manager secret name (e.g., ec2/my-server/ssh-key): ").strip()
+        if not secret_name:
+            print("Error: Secret name is required.")
+            sys.exit(1)
+
+        key_content = get_ssh_key_from_secrets_manager(session, secret_name)
+        if not key_content:
+            print("Failed to retrieve SSH key. Falling back to local file.")
+            key_path = input("Enter path to local SSH key file: ").strip()
+            if not key_path:
+                print("Error: SSH key path is required.")
+                sys.exit(1)
+        else:
+            key_path = write_temp_key_file(key_content)
+            if not key_path:
+                print("Error: Failed to write temporary key file.")
+                sys.exit(1)
+            temp_key = True
+            print("  SSH key retrieved and ready for use.")
+    else:
+        # Use local file
+        key_path = input("Enter path to SSH private key file (e.g., ~/.ssh/my-key.pem): ").strip()
+        if not key_path:
+            print("Error: SSH key path is required.")
+            sys.exit(1)
+        key_path = os.path.expanduser(key_path)
+
+    return ssh_user, key_path, temp_key
+
+
+# =============================================================================
+# MAIN WORKFLOW
+# =============================================================================
+
+
 def main():
     """Main function to orchestrate the EC2 management workflow."""
-    # Step 1: Get user input
-    aws_profile, region, instance_name = get_user_input()
+    # Step 1: Get basic AWS configuration
+    aws_profile, region = get_user_input()
 
-    # Step 2: Create EC2 client
+    # Step 2: Create session
     print(f"\nConnecting to AWS (profile: {aws_profile}, region: {region})...")
-    ec2_client = create_ec2_client(aws_profile, region)
+    session = create_session(aws_profile, region)
+    ec2_client = session.client("ec2")
 
-    # Step 3: Find the instance by name
-    print(f"Looking for instance with Name: '{instance_name}'...")
-    instance = find_instance_by_name(ec2_client, instance_name)
-    instance_id = instance["InstanceId"]
-    state = get_instance_state(instance)
+    # Step 3: Choose action
+    action = get_main_action()
 
-    print(f"\nFound instance:")
-    print(f"  Instance ID : {instance_id}")
-    print(f"  Name        : {instance_name}")
-    print(f"  State       : {state}")
-    print(f"  Type        : {instance.get('InstanceType', 'N/A')}")
+    instance = None
+    instance_id = None
+    instance_name = None
+    secret_name_for_ssh = None
 
-    # Step 4: Handle instance state
-    if state == "stopped":
-        print(f"\nInstance '{instance_name}' is currently STOPPED.")
-        if confirm("Would you like to start the instance?"):
-            start_instance(ec2_client, instance_id, instance_name)
-        else:
-            print("Cannot SSH to a stopped instance. Exiting.")
+    if action == "2":
+        # CREATE new instance
+        config = get_create_instance_input(session)
+        secret_name_for_ssh = config["secret_name"]
+
+        if not confirm("\nProceed with creating this instance?"):
+            print("Instance creation cancelled.")
             sys.exit(0)
-    elif state == "pending":
-        print("\nInstance is starting up. Waiting for it to be ready...")
-        waiter = ec2_client.get_waiter("instance_running")
-        waiter.wait(InstanceIds=[instance_id])
-        print("Instance is now running!")
-    elif state == "stopping":
-        print("\nInstance is currently stopping. Please wait and try again later.")
-        sys.exit(1)
-    elif state != "running":
-        print(f"\nInstance is in unexpected state: {state}. Cannot proceed.")
-        sys.exit(1)
 
-    # Step 5: Get public IP
+        instance = create_ec2_instance(session, config)
+        instance_id = instance["InstanceId"]
+        instance_name = config["instance_name"]
+
+        print(f"\n  Instance ID : {instance_id}")
+        print(f"  Public IP   : {instance.get('PublicIpAddress', 'N/A')}")
+        print(f"  Private IP  : {instance.get('PrivateIpAddress', 'N/A')}")
+
+    else:
+        # CONNECT to existing instance
+        instance_name = input("\nEnter EC2 instance Name tag: ").strip()
+        if not instance_name:
+            print("Error: Instance name is required.")
+            sys.exit(1)
+
+        print(f"Looking for instance with Name: '{instance_name}'...")
+        instance = find_instance_by_name(ec2_client, instance_name)
+        instance_id = instance["InstanceId"]
+        state = get_instance_state(instance)
+
+        print(f"\nFound instance:")
+        print(f"  Instance ID : {instance_id}")
+        print(f"  Name        : {instance_name}")
+        print(f"  State       : {state}")
+        print(f"  Type        : {instance.get('InstanceType', 'N/A')}")
+
+        # Handle instance state
+        if state == "stopped":
+            print(f"\nInstance '{instance_name}' is currently STOPPED.")
+            if confirm("Would you like to start the instance?"):
+                start_instance(ec2_client, instance_id, instance_name)
+            else:
+                print("Cannot SSH to a stopped instance. Exiting.")
+                sys.exit(0)
+        elif state == "pending":
+            print("\nInstance is starting up. Waiting for it to be ready...")
+            waiter = ec2_client.get_waiter("instance_running")
+            waiter.wait(InstanceIds=[instance_id])
+            print("Instance is now running!")
+        elif state == "stopping":
+            print("\nInstance is currently stopping. Please wait and try again later.")
+            sys.exit(1)
+        elif state != "running":
+            print(f"\nInstance is in unexpected state: {state}. Cannot proceed.")
+            sys.exit(1)
+
+    # Step 4: Get public IP
     public_ip = get_instance_public_ip(ec2_client, instance_id)
     if not public_ip:
         print("\nError: Instance does not have a public IP address.")
@@ -269,21 +734,34 @@ def main():
         else:
             sys.exit(1)
 
-    print(f"\n  Public IP   : {public_ip}")
+    print(f"\n  IP Address  : {public_ip}")
 
-    # Step 6: SSH into the instance
-    print("\n" + "=" * 60)
-    print("  Initiating SSH Connection")
-    print("=" * 60)
+    # Step 5: Get SSH credentials (from Secrets Manager or local)
+    if confirm("\nWould you like to SSH into the instance?"):
+        print("\n" + "=" * 60)
+        print("  SSH Connection Setup")
+        print("=" * 60)
 
-    ssh_to_instance(public_ip)
+        ssh_user, key_path, temp_key = get_ssh_credentials(session)
 
-    # Step 7: After SSH session ends, offer to stop the instance
-    print("\n" + "=" * 60)
-    print("  SSH Session Ended")
-    print("=" * 60)
+        # Step 6: SSH into the instance
+        print("\n" + "=" * 60)
+        print("  Initiating SSH Connection")
+        print("=" * 60)
 
-    print(f"\nYour work on instance '{instance_name}' is complete.")
+        ssh_to_instance(public_ip, key_path, ssh_user)
+
+        # Cleanup temp key file if used
+        if temp_key:
+            cleanup_temp_key(key_path)
+
+        # Step 7: After SSH session ends, offer to stop the instance
+        print("\n" + "=" * 60)
+        print("  SSH Session Ended")
+        print("=" * 60)
+
+    # Step 8: Offer to stop the instance
+    print(f"\nYour work on instance '{instance_name}' ({instance_id}) is complete.")
     if confirm("Would you like to STOP the instance to save costs?"):
         stop_instance(ec2_client, instance_id, instance_name)
     else:
