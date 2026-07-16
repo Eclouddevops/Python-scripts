@@ -1,0 +1,13 @@
+# =============================================================================
+# Terraform Variables - Copy this file to terraform.tfvars and fill in values
+# =============================================================================
+
+aws_region       = "us-east-1"
+instance_name    = "ubuntu-server"
+instance_type    = "m5.2xlarge"    # 8 vCPU, 16GB RAM
+root_volume_size = 30              # 30GB storage
+key_pair_name    = "my-key-pair"   # REQUIRED: Your AWS key pair name
+allowed_ssh_cidr = "0.0.0.0/0"    # Restrict this to your IP for security
+environment      = "dev"
+# vpc_id         = ""              # Optional: Leave empty for default VPC
+# subnet_id      = ""              # Optional: Leave empty for default subnet
