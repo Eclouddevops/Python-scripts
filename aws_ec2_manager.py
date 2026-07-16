@@ -6,14 +6,14 @@ AWS EC2 Instance Manager Script
 - Automatically retrieves SSH private key from AWS Secrets Manager
 - SSHs into the instance (no manual SSH config needed)
 - Tracks session duration and calculates usage cost
-- After SSH session ends, shows cost report and offers to stop the instance
+- Fetches REAL daily costs from AWS Cost Explorer
+- Shows total accumulated cost including previous usage
+- After SSH session ends, shows full cost report and offers to stop
 
 Note: Uses default AWS credentials and region from environment
-      (AWS_PROFILE, AWS_REGION, ~/.aws/config, or IAM role)
 
 SSH Key Convention:
     Secret name in Secrets Manager: ec2/<instance_name>/ssh-private-key
-    This matches the Terraform-created secret automatically.
 """
 
 import json
@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     import boto3
@@ -38,69 +38,35 @@ DEFAULT_SSH_USER = "ubuntu"
 # Secret name pattern (matches Terraform output)
 SECRET_NAME_PATTERN = "ec2/{instance_name}/ssh-private-key"
 
+
 # =============================================================================
 # EC2 INSTANCE PRICING (On-Demand, USD per hour, us-east-1)
-# Update these prices as needed for your region
 # =============================================================================
 
 EC2_HOURLY_PRICING = {
-    # General Purpose
-    "t2.nano": 0.0058,
-    "t2.micro": 0.0116,
-    "t2.small": 0.023,
-    "t2.medium": 0.0464,
-    "t2.large": 0.0928,
-    "t2.xlarge": 0.1856,
+    "t2.nano": 0.0058, "t2.micro": 0.0116, "t2.small": 0.023,
+    "t2.medium": 0.0464, "t2.large": 0.0928, "t2.xlarge": 0.1856,
     "t2.2xlarge": 0.3712,
-    "t3.nano": 0.0052,
-    "t3.micro": 0.0104,
-    "t3.small": 0.0208,
-    "t3.medium": 0.0416,
-    "t3.large": 0.0832,
-    "t3.xlarge": 0.1664,
+    "t3.nano": 0.0052, "t3.micro": 0.0104, "t3.small": 0.0208,
+    "t3.medium": 0.0416, "t3.large": 0.0832, "t3.xlarge": 0.1664,
     "t3.2xlarge": 0.3328,
-    "t3a.nano": 0.0047,
-    "t3a.micro": 0.0094,
-    "t3a.small": 0.0188,
-    "t3a.medium": 0.0376,
-    "t3a.large": 0.0752,
-    "t3a.xlarge": 0.1504,
+    "t3a.nano": 0.0047, "t3a.micro": 0.0094, "t3a.small": 0.0188,
+    "t3a.medium": 0.0376, "t3a.large": 0.0752, "t3a.xlarge": 0.1504,
     "t3a.2xlarge": 0.3008,
-    # Compute Optimized
-    "m5.large": 0.096,
-    "m5.xlarge": 0.192,
-    "m5.2xlarge": 0.384,
-    "m5.4xlarge": 0.768,
-    "m5.8xlarge": 1.536,
-    "m5.12xlarge": 2.304,
-    "m5.16xlarge": 3.072,
-    "m5.24xlarge": 4.608,
-    "m5a.large": 0.086,
-    "m5a.xlarge": 0.172,
-    "m5a.2xlarge": 0.344,
-    "m5a.4xlarge": 0.688,
-    "m6i.large": 0.096,
-    "m6i.xlarge": 0.192,
-    "m6i.2xlarge": 0.384,
+    "m5.large": 0.096, "m5.xlarge": 0.192, "m5.2xlarge": 0.384,
+    "m5.4xlarge": 0.768, "m5.8xlarge": 1.536, "m5.12xlarge": 2.304,
+    "m5.16xlarge": 3.072, "m5.24xlarge": 4.608,
+    "m5a.large": 0.086, "m5a.xlarge": 0.172, "m5a.2xlarge": 0.344,
+    "m6i.large": 0.096, "m6i.xlarge": 0.192, "m6i.2xlarge": 0.384,
     "m6i.4xlarge": 0.768,
-    # Compute Optimized
-    "c5.large": 0.085,
-    "c5.xlarge": 0.17,
-    "c5.2xlarge": 0.34,
-    "c5.4xlarge": 0.68,
-    "c5.9xlarge": 1.53,
-    "c6i.large": 0.085,
-    "c6i.xlarge": 0.17,
-    "c6i.2xlarge": 0.34,
-    # Memory Optimized
-    "r5.large": 0.126,
-    "r5.xlarge": 0.252,
-    "r5.2xlarge": 0.504,
+    "c5.large": 0.085, "c5.xlarge": 0.17, "c5.2xlarge": 0.34,
+    "c5.4xlarge": 0.68, "c5.9xlarge": 1.53,
+    "c6i.large": 0.085, "c6i.xlarge": 0.17, "c6i.2xlarge": 0.34,
+    "r5.large": 0.126, "r5.xlarge": 0.252, "r5.2xlarge": 0.504,
     "r5.4xlarge": 1.008,
-    "r6i.large": 0.126,
-    "r6i.xlarge": 0.252,
-    "r6i.2xlarge": 0.504,
+    "r6i.large": 0.126, "r6i.xlarge": 0.252, "r6i.2xlarge": 0.504,
 }
+
 
 
 # =============================================================================
@@ -112,7 +78,6 @@ def create_session():
     """Create a boto3 session using default AWS credentials and region."""
     try:
         session = boto3.Session()
-        # Verify credentials are available
         sts = session.client("sts")
         sts.get_caller_identity()
         return session
@@ -127,6 +92,118 @@ def create_session():
     except ClientError as e:
         print(f"Error: Unable to authenticate with AWS: {e}")
         sys.exit(1)
+
+
+
+# =============================================================================
+# AWS COST EXPLORER - REAL USAGE COST DATA
+# =============================================================================
+
+
+def get_instance_daily_costs(session, instance_id, days=30):
+    """
+    Fetch real daily costs for a specific EC2 instance from AWS Cost Explorer.
+    Returns a list of {date, cost} dicts and total accumulated cost.
+    """
+    try:
+        ce_client = session.client("ce")
+    except Exception:
+        return None, None
+
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=days)
+
+    try:
+        response = ce_client.get_cost_and_usage(
+            TimePeriod={
+                "Start": start_date.strftime("%Y-%m-%d"),
+                "End": end_date.strftime("%Y-%m-%d"),
+            },
+            Granularity="DAILY",
+            Metrics=["UnblendedCost"],
+            Filter={
+                "And": [
+                    {
+                        "Dimensions": {
+                            "Key": "SERVICE",
+                            "Values": ["Amazon Elastic Compute Cloud - Compute"],
+                        }
+                    },
+                    {
+                        "Dimensions": {
+                            "Key": "RESOURCE_ID",
+                            "Values": [instance_id],
+                        }
+                    },
+                ]
+            },
+        )
+
+        daily_costs = []
+        total_cost = 0.0
+
+        for result in response.get("ResultsByTime", []):
+            date = result["TimePeriod"]["Start"]
+            cost = float(result["Total"]["UnblendedCost"]["Amount"])
+            if cost > 0:
+                daily_costs.append({"date": date, "cost": cost})
+                total_cost += cost
+
+        return daily_costs, total_cost
+
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        if error_code == "AccessDeniedException":
+            return None, None
+        return None, None
+    except Exception:
+        return None, None
+
+
+
+def get_monthly_total_cost(session, instance_id):
+    """Fetch the current month's total cost for the instance."""
+    try:
+        ce_client = session.client("ce")
+    except Exception:
+        return None
+
+    today = datetime.now(timezone.utc).date()
+    month_start = today.replace(day=1)
+
+    try:
+        response = ce_client.get_cost_and_usage(
+            TimePeriod={
+                "Start": month_start.strftime("%Y-%m-%d"),
+                "End": today.strftime("%Y-%m-%d"),
+            },
+            Granularity="MONTHLY",
+            Metrics=["UnblendedCost"],
+            Filter={
+                "And": [
+                    {
+                        "Dimensions": {
+                            "Key": "SERVICE",
+                            "Values": ["Amazon Elastic Compute Cloud - Compute"],
+                        }
+                    },
+                    {
+                        "Dimensions": {
+                            "Key": "RESOURCE_ID",
+                            "Values": [instance_id],
+                        }
+                    },
+                ]
+            },
+        )
+
+        for result in response.get("ResultsByTime", []):
+            return float(result["Total"]["UnblendedCost"]["Amount"])
+
+        return 0.0
+    except Exception:
+        return None
+
 
 
 # =============================================================================
@@ -149,35 +226,24 @@ def get_instance_launch_time(ec2_client, instance_id):
         return None
 
 
-def calculate_session_cost(instance_type, duration_seconds):
-    """Calculate the cost for the session duration."""
-    hourly_rate = get_instance_hourly_rate(instance_type)
-    if hourly_rate is None:
-        return None, None
-
-    hours = duration_seconds / 3600.0
-    cost = hours * hourly_rate
-    return cost, hourly_rate
-
-
 def format_duration(seconds):
     """Format seconds into human-readable duration."""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
-
     parts = []
     if hours > 0:
         parts.append(f"{hours}h")
     if minutes > 0:
         parts.append(f"{minutes}m")
     parts.append(f"{secs}s")
-
     return " ".join(parts)
 
 
-def display_cost_report(instance_name, instance_id, instance_type, session_start, session_end, total_running_hours=None):
-    """Display a detailed cost report for the session."""
+
+def display_cost_report(session, instance_name, instance_id, instance_type,
+                        session_start, session_end, total_running_hours=None):
+    """Display a detailed cost report with real AWS Cost Explorer data."""
     session_duration = (session_end - session_start).total_seconds()
     hourly_rate = get_instance_hourly_rate(instance_type)
 
@@ -191,45 +257,97 @@ def display_cost_report(instance_name, instance_id, instance_type, session_start
     print(f"  Session End     : {session_end.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"  Session Duration: {format_duration(session_duration)}")
 
+    # --- Current Session Cost ---
     print(f"\n  {'─' * 50}")
-    print(f"  PRICING BREAKDOWN:")
+    print(f"  THIS SESSION:")
     print(f"  {'─' * 50}")
 
     if hourly_rate is not None:
         session_cost = (session_duration / 3600.0) * hourly_rate
         print(f"  Hourly Rate     : ${hourly_rate:.4f}/hr")
         print(f"  Session Hours   : {session_duration / 3600.0:.4f} hrs")
-        print(f"  Session Cost    : ${session_cost:.6f}")
-        print(f"  {'─' * 50}")
-
-        # Show projections
-        daily_cost = hourly_rate * 24
-        monthly_cost = hourly_rate * 24 * 30
-        print(f"\n  COST PROJECTIONS (if running 24/7):")
-        print(f"  Per Hour        : ${hourly_rate:.4f}")
-        print(f"  Per Day         : ${daily_cost:.2f}")
-        print(f"  Per Month (30d) : ${monthly_cost:.2f}")
-
-        # Show total running time cost if available
-        if total_running_hours is not None:
-            total_cost = total_running_hours * hourly_rate
-            print(f"\n  TOTAL SINCE LAST START:")
-            print(f"  Running Time    : {format_duration(total_running_hours * 3600)}")
-            print(f"  Total Cost      : ${total_cost:.4f}")
+        print(f"  Session Cost    : ${session_cost:.4f}")
     else:
-        print(f"  Hourly Rate     : Unknown (instance type '{instance_type}' not in pricing table)")
+        print(f"  Hourly Rate     : Unknown ('{instance_type}' not in pricing table)")
         print(f"  Session Hours   : {session_duration / 3600.0:.4f} hrs")
-        print(f"  Session Cost    : Unable to calculate")
-        print(f"\n  Tip: Check AWS Pricing at https://aws.amazon.com/ec2/pricing/on-demand/")
 
+    # --- Total Running Cost Since Last Start ---
+    if total_running_hours is not None and hourly_rate is not None:
+        total_run_cost = total_running_hours * hourly_rate
+        print(f"\n  {'─' * 50}")
+        print(f"  TOTAL SINCE LAST START:")
+        print(f"  {'─' * 50}")
+        print(f"  Running Time    : {format_duration(total_running_hours * 3600)}")
+        print(f"  Running Cost    : ${total_run_cost:.4f}")
+
+
+    # --- Real AWS Cost Explorer Data ---
     print(f"\n  {'─' * 50}")
+    print(f"  AWS COST EXPLORER (Real Usage - Last 7 Days):")
+    print(f"  {'─' * 50}")
 
-    # EBS storage cost estimate (gp3 default)
-    print(f"  EBS STORAGE (estimated):")
-    print(f"  30GB gp3 volume : ~$2.40/month")
-    print(f"  Elastic IP      : $0.005/hr (when instance stopped)")
+    daily_costs, total_historical = get_instance_daily_costs(session, instance_id, days=7)
+
+    if daily_costs is not None:
+        if daily_costs:
+            print(f"  {'Date':<14} {'Cost':>10}")
+            print(f"  {'─' * 14} {'─' * 10}")
+            for entry in daily_costs[-7:]:
+                print(f"  {entry['date']:<14} ${entry['cost']:>8.4f}")
+            print(f"  {'─' * 14} {'─' * 10}")
+            print(f"  {'7-Day Total':<14} ${total_historical:>8.4f}")
+        else:
+            print("  No cost data available for last 7 days.")
+            print("  (Instance may be new or Cost Explorer data not yet available)")
+    else:
+        print("  Could not fetch Cost Explorer data.")
+        print("  (Requires ce:GetCostAndUsage permission)")
+
+    # --- Monthly Total ---
+    print(f"\n  {'─' * 50}")
+    print(f"  CURRENT MONTH TOTAL:")
+    print(f"  {'─' * 50}")
+
+    monthly_cost = get_monthly_total_cost(session, instance_id)
+    if monthly_cost is not None:
+        today = datetime.now(timezone.utc).date()
+        month_name = today.strftime("%B %Y")
+        print(f"  {month_name}    : ${monthly_cost:.4f}")
+
+        # Estimate rest of month
+        day_of_month = today.day
+        if day_of_month > 1 and monthly_cost > 0:
+            days_in_month = 30
+            daily_avg = monthly_cost / day_of_month
+            projected = daily_avg * days_in_month
+            print(f"  Daily Average   : ${daily_avg:.4f}/day")
+            print(f"  Month Projected : ${projected:.2f} (estimated)")
+    else:
+        print("  Could not fetch monthly cost data.")
+        if hourly_rate:
+            daily_cost = hourly_rate * 24
+            monthly_cost_est = daily_cost * 30
+            print(f"  Estimated (24/7): ${monthly_cost_est:.2f}/month")
+
+
+    # --- Cost Projections ---
+    if hourly_rate is not None:
+        print(f"\n  {'─' * 50}")
+        print(f"  COST PROJECTIONS (if running 24/7):")
+        print(f"  {'─' * 50}")
+        print(f"  Per Hour        : ${hourly_rate:.4f}")
+        print(f"  Per Day         : ${hourly_rate * 24:.2f}")
+        print(f"  Per Month (30d) : ${hourly_rate * 24 * 30:.2f}")
+
+    # --- Additional costs ---
+    print(f"\n  {'─' * 50}")
+    print(f"  ADDITIONAL COSTS:")
+    print(f"  {'─' * 50}")
+    print(f"  EBS 30GB gp3    : ~$2.40/month")
+    print(f"  Elastic IP (stopped): $0.005/hr ($3.60/month)")
 
     print("\n" + "=" * 60)
+
 
 
 # =============================================================================
@@ -238,13 +356,7 @@ def display_cost_report(instance_name, instance_id, instance_type, session_start
 
 
 def get_ssh_key_from_secrets_manager(session, secret_name):
-    """
-    Retrieve SSH private key from AWS Secrets Manager.
-
-    The secret can be stored as:
-    - Plain text (the PEM key content directly)
-    - JSON with a key like 'private_key', 'ssh_key', or 'pem'
-    """
+    """Retrieve SSH private key from AWS Secrets Manager."""
     print(f"  Retrieving SSH key from Secrets Manager: '{secret_name}'...")
 
     try:
@@ -253,48 +365,40 @@ def get_ssh_key_from_secrets_manager(session, secret_name):
     except ClientError as e:
         error_code = e.response["Error"]["Code"]
         if error_code == "ResourceNotFoundException":
-            print(f"  Error: Secret '{secret_name}' not found in Secrets Manager.")
+            print(f"  Error: Secret '{secret_name}' not found.")
         elif error_code == "AccessDeniedException":
             print(f"  Error: Access denied to secret '{secret_name}'.")
-            print("  Ensure your IAM role/user has secretsmanager:GetSecretValue permission.")
-        elif error_code == "InvalidRequestException":
-            print(f"  Error: Invalid request for secret '{secret_name}'.")
         else:
             print(f"  Error retrieving secret: {e}")
         return None
 
-    # Extract the secret value
     if "SecretString" in response:
         secret_value = response["SecretString"]
     else:
-        # Binary secret
         import base64
         secret_value = base64.b64decode(response["SecretBinary"]).decode("utf-8")
 
-    # Try to parse as JSON first
+    # Try JSON first
     try:
         secret_json = json.loads(secret_value)
-        # Look for common key names
         key_names = ["private_key", "ssh_key", "pem", "key", "ssh_private_key", "ec2_key"]
         for key_name in key_names:
             if key_name in secret_json:
                 print(f"  Found SSH key in JSON field: '{key_name}'")
                 return secret_json[key_name]
-        # If none found, try the first value that looks like a PEM key
         for key_name, value in secret_json.items():
             if isinstance(value, str) and "BEGIN" in value and "KEY" in value:
                 print(f"  Found SSH key in JSON field: '{key_name}'")
                 return value
-        print(f"  Error: No SSH key found in secret. Available fields: {list(secret_json.keys())}")
+        print(f"  Error: No SSH key found. Fields: {list(secret_json.keys())}")
         return None
     except (json.JSONDecodeError, TypeError):
-        # Not JSON, treat as plain text PEM key
         if "BEGIN" in secret_value and "KEY" in secret_value:
             print("  Found SSH key as plain text PEM.")
             return secret_value
-        else:
-            print("  Error: Secret does not appear to contain a valid SSH key.")
-            return None
+        print("  Error: Secret does not contain a valid SSH key.")
+        return None
+
 
 
 def write_temp_key_file(key_content):
@@ -304,14 +408,10 @@ def write_temp_key_file(key_content):
             mode="w", prefix="ec2_ssh_key_", suffix=".pem", delete=False
         )
         tmp_file.write(key_content)
-        # Ensure key ends with newline
         if not key_content.endswith("\n"):
             tmp_file.write("\n")
         tmp_file.close()
-
-        # Set strict permissions (required by SSH)
         os.chmod(tmp_file.name, 0o600)
-
         return tmp_file.name
     except Exception as e:
         print(f"  Error writing temporary key file: {e}")
@@ -326,7 +426,7 @@ def cleanup_temp_key(key_path):
             print("  Temporary SSH key file removed.")
     except Exception:
         print(f"  Warning: Could not remove temp key file: {key_path}")
-        print("  Please delete it manually for security.")
+
 
 
 # =============================================================================
@@ -340,10 +440,8 @@ def find_instance_by_name(ec2_client, instance_name):
         response = ec2_client.describe_instances(
             Filters=[
                 {"Name": "tag:Name", "Values": [instance_name]},
-                {
-                    "Name": "instance-state-name",
-                    "Values": ["running", "stopped", "pending", "stopping"],
-                },
+                {"Name": "instance-state-name",
+                 "Values": ["running", "stopped", "pending", "stopping"]},
             ]
         )
     except ClientError as e:
@@ -375,8 +473,8 @@ def get_instance_public_ip(ec2_client, instance_id):
     """Get the public IP address of a running instance."""
     response = ec2_client.describe_instances(InstanceIds=[instance_id])
     instance = response["Reservations"][0]["Instances"][0]
-    public_ip = instance.get("PublicIpAddress")
-    return public_ip
+    return instance.get("PublicIpAddress")
+
 
 
 def start_instance(ec2_client, instance_id, instance_name):
@@ -391,28 +489,20 @@ def start_instance(ec2_client, instance_id, instance_name):
     print("Waiting for instance to enter 'running' state...")
     waiter = ec2_client.get_waiter("instance_running")
     try:
-        waiter.wait(
-            InstanceIds=[instance_id],
-            WaiterConfig={"Delay": 5, "MaxAttempts": 60},
-        )
+        waiter.wait(InstanceIds=[instance_id],
+                    WaiterConfig={"Delay": 5, "MaxAttempts": 60})
     except Exception as e:
         print(f"Error waiting for instance to start: {e}")
         sys.exit(1)
 
     print("Instance is now running!")
-
-    # Wait for status checks
     print("Waiting for instance status checks to pass...")
     status_waiter = ec2_client.get_waiter("instance_status_ok")
     try:
-        status_waiter.wait(
-            InstanceIds=[instance_id],
-            WaiterConfig={"Delay": 10, "MaxAttempts": 60},
-        )
+        status_waiter.wait(InstanceIds=[instance_id],
+                          WaiterConfig={"Delay": 10, "MaxAttempts": 60})
     except Exception:
-        print("Warning: Status checks did not pass in time, but instance is running.")
-        print("SSH connection may still work.")
-
+        print("Warning: Status checks timed out, but instance is running.")
     print("Instance is ready!")
 
 
@@ -428,15 +518,13 @@ def stop_instance(ec2_client, instance_id, instance_name):
     print("Waiting for instance to stop...")
     waiter = ec2_client.get_waiter("instance_stopped")
     try:
-        waiter.wait(
-            InstanceIds=[instance_id],
-            WaiterConfig={"Delay": 5, "MaxAttempts": 60},
-        )
+        waiter.wait(InstanceIds=[instance_id],
+                    WaiterConfig={"Delay": 5, "MaxAttempts": 60})
     except Exception as e:
         print(f"Error waiting for instance to stop: {e}")
         return
-
     print("Instance has been stopped successfully.")
+
 
 
 # =============================================================================
@@ -451,8 +539,7 @@ def ssh_to_instance(public_ip, key_path, ssh_user):
     print("-" * 60)
 
     ssh_command = [
-        "ssh",
-        "-i", key_path,
+        "ssh", "-i", key_path,
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=30",
@@ -463,7 +550,7 @@ def ssh_to_instance(public_ip, key_path, ssh_user):
         result = subprocess.run(ssh_command)
         return result.returncode == 0
     except FileNotFoundError:
-        print("Error: 'ssh' command not found. Please install OpenSSH client.")
+        print("Error: 'ssh' command not found. Install OpenSSH client.")
         return False
     except KeyboardInterrupt:
         print("\nSSH session interrupted.")
@@ -487,6 +574,7 @@ def confirm(prompt):
             print("Please enter 'yes' or 'no'.")
 
 
+
 # =============================================================================
 # MAIN WORKFLOW
 # =============================================================================
@@ -499,26 +587,25 @@ def main():
     print("=" * 60)
     print()
 
-    # Step 1: Create session (uses default AWS credentials/region)
+    # Step 1: Create session
     print("Connecting to AWS...")
     session = create_session()
     ec2_client = session.client("ec2")
     print("  Authenticated successfully.")
 
-    # Step 2: Ask for instance name (only user prompt needed)
+    # Step 2: Ask for instance name
     instance_name = input("\nEnter EC2 instance Name tag: ").strip()
     if not instance_name:
         print("Error: Instance name is required.")
         sys.exit(1)
 
-    # Step 3: Find the instance by name
+    # Step 3: Find the instance
     print(f"\nLooking for instance with Name: '{instance_name}'...")
     instance = find_instance_by_name(ec2_client, instance_name)
     instance_id = instance["InstanceId"]
     instance_type = instance.get("InstanceType", "unknown")
     state = get_instance_state(instance)
 
-    # Get hourly rate for display
     hourly_rate = get_instance_hourly_rate(instance_type)
     rate_display = f"${hourly_rate:.4f}/hr" if hourly_rate else "Unknown"
 
@@ -528,6 +615,8 @@ def main():
     print(f"  State         : {state}")
     print(f"  Type          : {instance_type}")
     print(f"  Hourly Rate   : {rate_display}")
+    if hourly_rate:
+        print(f"  Daily Rate    : ${hourly_rate * 24:.2f}/day")
 
     # Step 4: Handle instance state
     if state == "stopped":
@@ -540,34 +629,30 @@ def main():
             print("Cannot SSH to a stopped instance. Exiting.")
             sys.exit(0)
     elif state == "pending":
-        print("\nInstance is starting up. Waiting for it to be ready...")
+        print("\nInstance is starting up. Waiting...")
         waiter = ec2_client.get_waiter("instance_running")
         waiter.wait(InstanceIds=[instance_id])
         print("Instance is now running!")
     elif state == "stopping":
-        print("\nInstance is currently stopping. Please wait and try again later.")
+        print("\nInstance is currently stopping. Try again later.")
         sys.exit(1)
     elif state != "running":
-        print(f"\nInstance is in unexpected state: {state}. Cannot proceed.")
+        print(f"\nUnexpected state: {state}. Cannot proceed.")
         sys.exit(1)
 
     # Record session start time
     session_start = datetime.now(timezone.utc)
-
-    # Get total running time from LaunchTime
     launch_time = get_instance_launch_time(ec2_client, instance_id)
+
 
     # Step 5: Get public IP
     public_ip = get_instance_public_ip(ec2_client, instance_id)
     if not public_ip:
         print("\nError: Instance does not have a public IP address.")
-        print("Make sure the instance is in a public subnet with a public IP assigned.")
-
-        # Try private IP as fallback
         private_ip = instance.get("PrivateIpAddress")
         if private_ip:
             print(f"Private IP available: {private_ip}")
-            if confirm("Would you like to try connecting via private IP?"):
+            if confirm("Connect via private IP?"):
                 public_ip = private_ip
             else:
                 sys.exit(1)
@@ -576,12 +661,11 @@ def main():
 
     print(f"  IP Address    : {public_ip}")
 
-    # Step 6: Automatically retrieve SSH key from Secrets Manager
+    # Step 6: Retrieve SSH key from Secrets Manager
     print("\n" + "=" * 60)
     print("  SSH Connection (Automated via Secrets Manager)")
     print("=" * 60)
 
-    # Auto-derive secret name from instance name
     secret_name = SECRET_NAME_PATTERN.format(instance_name=instance_name)
     ssh_user = DEFAULT_SSH_USER
 
@@ -589,11 +673,9 @@ def main():
     print(f"  Secret Name : {secret_name}")
 
     key_content = get_ssh_key_from_secrets_manager(session, secret_name)
-
     if not key_content:
         print(f"\n  Could not retrieve key from '{secret_name}'.")
-        print("  Ensure the secret exists in Secrets Manager with the SSH private key.")
-        print(f"  Expected format: ec2/<instance_name>/ssh-private-key")
+        print(f"  Expected: ec2/<instance_name>/ssh-private-key")
         sys.exit(1)
 
     key_path = write_temp_key_file(key_content)
@@ -615,17 +697,19 @@ def main():
     # Record session end time
     session_end = datetime.now(timezone.utc)
 
-    # Cleanup temp key file
+    # Cleanup temp key
     cleanup_temp_key(key_path)
 
-    # Step 8: Calculate total running hours since launch
+
+    # Step 8: Calculate total running hours
     total_running_hours = None
     if launch_time:
         total_running_seconds = (session_end - launch_time).total_seconds()
         total_running_hours = total_running_seconds / 3600.0
 
-    # Step 9: Display cost report
+    # Step 9: Display full cost report (includes AWS Cost Explorer data)
     display_cost_report(
+        session=session,
         instance_name=instance_name,
         instance_id=instance_id,
         instance_type=instance_type,
@@ -634,18 +718,18 @@ def main():
         total_running_hours=total_running_hours,
     )
 
-    # Step 10: Offer to stop the instance
-    print(f"\nYour work on instance '{instance_name}' ({instance_id}) is complete.")
+    # Step 10: Offer to stop
+    print(f"\nYour work on '{instance_name}' ({instance_id}) is complete.")
     if confirm("Would you like to STOP the instance to save costs?"):
         stop_instance(ec2_client, instance_id, instance_name)
-        print("\n  Instance stopped. No further compute charges will accrue.")
+        print("\n  Instance stopped. No further compute charges.")
         if hourly_rate:
-            print(f"  You saved: ~${hourly_rate:.4f} per hour by stopping.")
+            print(f"  You save: ~${hourly_rate:.4f}/hr (${hourly_rate * 24:.2f}/day)")
     else:
         print(f"  Instance '{instance_name}' will remain running.")
         if hourly_rate:
             print(f"  Ongoing cost: {rate_display} (~${hourly_rate * 24:.2f}/day)")
-        print("  Remember to stop it manually when you're done to avoid charges!")
+        print("  Stop it manually when done to avoid charges!")
 
     print("\nGoodbye!")
 
