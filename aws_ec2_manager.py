@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 AWS EC2 Instance Manager Script
-- Prompts for AWS account (profile), region, and EC2 instance name
+- Prompts for EC2 instance name
 - Checks instance state; offers to start if stopped
 - Retrieves SSH private key from AWS Secrets Manager for secure access
 - SSHs into the instance
 - After SSH session ends, offers to stop the instance
+
+Note: Uses default AWS credentials and region from environment
+      (AWS_PROFILE, AWS_REGION, ~/.aws/config, or IAM role)
 """
 
 import json
@@ -17,53 +20,35 @@ import time
 
 try:
     import boto3
-    from botocore.exceptions import ClientError, ProfileNotFound, NoCredentialsError
+    from botocore.exceptions import ClientError, NoCredentialsError
 except ImportError:
     print("Error: boto3 is required. Install it with: pip install boto3")
     sys.exit(1)
 
 
 # =============================================================================
-# USER INPUT & SESSION SETUP
+# SESSION SETUP
 # =============================================================================
 
 
-def get_user_input():
-    """Gather AWS account profile, region, and instance name from user."""
-    print("=" * 60)
-    print("       AWS EC2 Instance Manager & SSH Connector")
-    print("=" * 60)
-    print()
-
-    aws_profile = input("Enter AWS profile name (or press Enter for 'default'): ").strip()
-    if not aws_profile:
-        aws_profile = "default"
-
-    region = input("Enter AWS region (e.g., us-east-1, eu-west-1): ").strip()
-    if not region:
-        print("Error: Region is required.")
-        sys.exit(1)
-
-    instance_name = input("Enter EC2 instance Name tag: ").strip()
-    if not instance_name:
-        print("Error: Instance name is required.")
-        sys.exit(1)
-
-    return aws_profile, region, instance_name
-
-
-def create_session(aws_profile, region):
-    """Create a boto3 session with the specified profile and region."""
+def create_session():
+    """Create a boto3 session using default AWS credentials and region."""
     try:
-        session = boto3.Session(profile_name=aws_profile, region_name=region)
+        session = boto3.Session()
+        # Verify credentials are available
+        sts = session.client("sts")
+        sts.get_caller_identity()
         return session
-    except ProfileNotFound:
-        print(f"Error: AWS profile '{aws_profile}' not found.")
-        print("Available profiles can be configured in ~/.aws/credentials")
-        sys.exit(1)
     except NoCredentialsError:
         print("Error: No AWS credentials found.")
-        print("Configure credentials using 'aws configure' or set environment variables.")
+        print("Configure credentials using one of:")
+        print("  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars")
+        print("  - AWS_PROFILE env var")
+        print("  - ~/.aws/credentials file (aws configure)")
+        print("  - IAM instance role")
+        sys.exit(1)
+    except ClientError as e:
+        print(f"Error: Unable to authenticate with AWS: {e}")
         sys.exit(1)
 
 
@@ -382,13 +367,22 @@ def get_ssh_credentials(session):
 
 def main():
     """Main function to orchestrate the EC2 management workflow."""
-    # Step 1: Get user input (profile, region, instance name)
-    aws_profile, region, instance_name = get_user_input()
+    print("=" * 60)
+    print("       AWS EC2 Instance Manager & SSH Connector")
+    print("=" * 60)
+    print()
 
-    # Step 2: Create session
-    print(f"\nConnecting to AWS (profile: {aws_profile}, region: {region})...")
-    session = create_session(aws_profile, region)
+    # Step 1: Create session (uses default AWS credentials/region)
+    print("Connecting to AWS...")
+    session = create_session()
     ec2_client = session.client("ec2")
+    print("  Authenticated successfully.")
+
+    # Step 2: Ask for instance name
+    instance_name = input("\nEnter EC2 instance Name tag: ").strip()
+    if not instance_name:
+        print("Error: Instance name is required.")
+        sys.exit(1)
 
     # Step 3: Find the instance by name
     print(f"Looking for instance with Name: '{instance_name}'...")
