@@ -5,7 +5,8 @@ AWS EC2 Instance Manager Script
 - Checks instance state; offers to start if stopped
 - Automatically retrieves SSH private key from AWS Secrets Manager
 - SSHs into the instance (no manual SSH config needed)
-- After SSH session ends, offers to stop the instance
+- Tracks session duration and calculates usage cost
+- After SSH session ends, shows cost report and offers to stop the instance
 
 Note: Uses default AWS credentials and region from environment
       (AWS_PROFILE, AWS_REGION, ~/.aws/config, or IAM role)
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 try:
     import boto3
@@ -35,6 +37,70 @@ DEFAULT_SSH_USER = "ubuntu"
 
 # Secret name pattern (matches Terraform output)
 SECRET_NAME_PATTERN = "ec2/{instance_name}/ssh-private-key"
+
+# =============================================================================
+# EC2 INSTANCE PRICING (On-Demand, USD per hour, us-east-1)
+# Update these prices as needed for your region
+# =============================================================================
+
+EC2_HOURLY_PRICING = {
+    # General Purpose
+    "t2.nano": 0.0058,
+    "t2.micro": 0.0116,
+    "t2.small": 0.023,
+    "t2.medium": 0.0464,
+    "t2.large": 0.0928,
+    "t2.xlarge": 0.1856,
+    "t2.2xlarge": 0.3712,
+    "t3.nano": 0.0052,
+    "t3.micro": 0.0104,
+    "t3.small": 0.0208,
+    "t3.medium": 0.0416,
+    "t3.large": 0.0832,
+    "t3.xlarge": 0.1664,
+    "t3.2xlarge": 0.3328,
+    "t3a.nano": 0.0047,
+    "t3a.micro": 0.0094,
+    "t3a.small": 0.0188,
+    "t3a.medium": 0.0376,
+    "t3a.large": 0.0752,
+    "t3a.xlarge": 0.1504,
+    "t3a.2xlarge": 0.3008,
+    # Compute Optimized
+    "m5.large": 0.096,
+    "m5.xlarge": 0.192,
+    "m5.2xlarge": 0.384,
+    "m5.4xlarge": 0.768,
+    "m5.8xlarge": 1.536,
+    "m5.12xlarge": 2.304,
+    "m5.16xlarge": 3.072,
+    "m5.24xlarge": 4.608,
+    "m5a.large": 0.086,
+    "m5a.xlarge": 0.172,
+    "m5a.2xlarge": 0.344,
+    "m5a.4xlarge": 0.688,
+    "m6i.large": 0.096,
+    "m6i.xlarge": 0.192,
+    "m6i.2xlarge": 0.384,
+    "m6i.4xlarge": 0.768,
+    # Compute Optimized
+    "c5.large": 0.085,
+    "c5.xlarge": 0.17,
+    "c5.2xlarge": 0.34,
+    "c5.4xlarge": 0.68,
+    "c5.9xlarge": 1.53,
+    "c6i.large": 0.085,
+    "c6i.xlarge": 0.17,
+    "c6i.2xlarge": 0.34,
+    # Memory Optimized
+    "r5.large": 0.126,
+    "r5.xlarge": 0.252,
+    "r5.2xlarge": 0.504,
+    "r5.4xlarge": 1.008,
+    "r6i.large": 0.126,
+    "r6i.xlarge": 0.252,
+    "r6i.2xlarge": 0.504,
+}
 
 
 # =============================================================================
@@ -61,6 +127,109 @@ def create_session():
     except ClientError as e:
         print(f"Error: Unable to authenticate with AWS: {e}")
         sys.exit(1)
+
+
+# =============================================================================
+# COST TRACKING & REPORTING
+# =============================================================================
+
+
+def get_instance_hourly_rate(instance_type):
+    """Get the hourly rate for an instance type."""
+    return EC2_HOURLY_PRICING.get(instance_type, None)
+
+
+def get_instance_launch_time(ec2_client, instance_id):
+    """Get the time when the instance was last started (LaunchTime)."""
+    try:
+        response = ec2_client.describe_instances(InstanceIds=[instance_id])
+        instance = response["Reservations"][0]["Instances"][0]
+        return instance.get("LaunchTime")
+    except (ClientError, IndexError, KeyError):
+        return None
+
+
+def calculate_session_cost(instance_type, duration_seconds):
+    """Calculate the cost for the session duration."""
+    hourly_rate = get_instance_hourly_rate(instance_type)
+    if hourly_rate is None:
+        return None, None
+
+    hours = duration_seconds / 3600.0
+    cost = hours * hourly_rate
+    return cost, hourly_rate
+
+
+def format_duration(seconds):
+    """Format seconds into human-readable duration."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+
+    return " ".join(parts)
+
+
+def display_cost_report(instance_name, instance_id, instance_type, session_start, session_end, total_running_hours=None):
+    """Display a detailed cost report for the session."""
+    session_duration = (session_end - session_start).total_seconds()
+    hourly_rate = get_instance_hourly_rate(instance_type)
+
+    print("\n" + "=" * 60)
+    print("  USAGE COST REPORT")
+    print("=" * 60)
+    print(f"\n  Instance Name   : {instance_name}")
+    print(f"  Instance ID     : {instance_id}")
+    print(f"  Instance Type   : {instance_type}")
+    print(f"  Session Start   : {session_start.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"  Session End     : {session_end.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"  Session Duration: {format_duration(session_duration)}")
+
+    print(f"\n  {'─' * 50}")
+    print(f"  PRICING BREAKDOWN:")
+    print(f"  {'─' * 50}")
+
+    if hourly_rate is not None:
+        session_cost = (session_duration / 3600.0) * hourly_rate
+        print(f"  Hourly Rate     : ${hourly_rate:.4f}/hr")
+        print(f"  Session Hours   : {session_duration / 3600.0:.4f} hrs")
+        print(f"  Session Cost    : ${session_cost:.6f}")
+        print(f"  {'─' * 50}")
+
+        # Show projections
+        daily_cost = hourly_rate * 24
+        monthly_cost = hourly_rate * 24 * 30
+        print(f"\n  COST PROJECTIONS (if running 24/7):")
+        print(f"  Per Hour        : ${hourly_rate:.4f}")
+        print(f"  Per Day         : ${daily_cost:.2f}")
+        print(f"  Per Month (30d) : ${monthly_cost:.2f}")
+
+        # Show total running time cost if available
+        if total_running_hours is not None:
+            total_cost = total_running_hours * hourly_rate
+            print(f"\n  TOTAL SINCE LAST START:")
+            print(f"  Running Time    : {format_duration(total_running_hours * 3600)}")
+            print(f"  Total Cost      : ${total_cost:.4f}")
+    else:
+        print(f"  Hourly Rate     : Unknown (instance type '{instance_type}' not in pricing table)")
+        print(f"  Session Hours   : {session_duration / 3600.0:.4f} hrs")
+        print(f"  Session Cost    : Unable to calculate")
+        print(f"\n  Tip: Check AWS Pricing at https://aws.amazon.com/ec2/pricing/on-demand/")
+
+    print(f"\n  {'─' * 50}")
+
+    # EBS storage cost estimate (gp3 default)
+    print(f"  EBS STORAGE (estimated):")
+    print(f"  30GB gp3 volume : ~$2.40/month")
+    print(f"  Elastic IP      : $0.005/hr (when instance stopped)")
+
+    print("\n" + "=" * 60)
 
 
 # =============================================================================
@@ -346,17 +515,25 @@ def main():
     print(f"\nLooking for instance with Name: '{instance_name}'...")
     instance = find_instance_by_name(ec2_client, instance_name)
     instance_id = instance["InstanceId"]
+    instance_type = instance.get("InstanceType", "unknown")
     state = get_instance_state(instance)
 
+    # Get hourly rate for display
+    hourly_rate = get_instance_hourly_rate(instance_type)
+    rate_display = f"${hourly_rate:.4f}/hr" if hourly_rate else "Unknown"
+
     print(f"\nFound instance:")
-    print(f"  Instance ID : {instance_id}")
-    print(f"  Name        : {instance_name}")
-    print(f"  State       : {state}")
-    print(f"  Type        : {instance.get('InstanceType', 'N/A')}")
+    print(f"  Instance ID   : {instance_id}")
+    print(f"  Name          : {instance_name}")
+    print(f"  State         : {state}")
+    print(f"  Type          : {instance_type}")
+    print(f"  Hourly Rate   : {rate_display}")
 
     # Step 4: Handle instance state
     if state == "stopped":
         print(f"\nInstance '{instance_name}' is currently STOPPED.")
+        if hourly_rate:
+            print(f"  Starting will cost: {rate_display}")
         if confirm("Would you like to start the instance?"):
             start_instance(ec2_client, instance_id, instance_name)
         else:
@@ -373,6 +550,12 @@ def main():
     elif state != "running":
         print(f"\nInstance is in unexpected state: {state}. Cannot proceed.")
         sys.exit(1)
+
+    # Record session start time
+    session_start = datetime.now(timezone.utc)
+
+    # Get total running time from LaunchTime
+    launch_time = get_instance_launch_time(ec2_client, instance_id)
 
     # Step 5: Get public IP
     public_ip = get_instance_public_ip(ec2_client, instance_id)
@@ -391,7 +574,7 @@ def main():
         else:
             sys.exit(1)
 
-    print(f"  IP Address  : {public_ip}")
+    print(f"  IP Address    : {public_ip}")
 
     # Step 6: Automatically retrieve SSH key from Secrets Manager
     print("\n" + "=" * 60)
@@ -424,23 +607,45 @@ def main():
     print("=" * 60)
     print("  Initiating SSH Connection")
     print("=" * 60)
+    if hourly_rate:
+        print(f"  (Billing at {rate_display} while connected)")
 
     ssh_to_instance(public_ip, key_path, ssh_user)
+
+    # Record session end time
+    session_end = datetime.now(timezone.utc)
 
     # Cleanup temp key file
     cleanup_temp_key(key_path)
 
-    # Step 8: After SSH session ends, offer to stop the instance
-    print("\n" + "=" * 60)
-    print("  SSH Session Ended")
-    print("=" * 60)
+    # Step 8: Calculate total running hours since launch
+    total_running_hours = None
+    if launch_time:
+        total_running_seconds = (session_end - launch_time).total_seconds()
+        total_running_hours = total_running_seconds / 3600.0
 
+    # Step 9: Display cost report
+    display_cost_report(
+        instance_name=instance_name,
+        instance_id=instance_id,
+        instance_type=instance_type,
+        session_start=session_start,
+        session_end=session_end,
+        total_running_hours=total_running_hours,
+    )
+
+    # Step 10: Offer to stop the instance
     print(f"\nYour work on instance '{instance_name}' ({instance_id}) is complete.")
     if confirm("Would you like to STOP the instance to save costs?"):
         stop_instance(ec2_client, instance_id, instance_name)
+        print("\n  Instance stopped. No further compute charges will accrue.")
+        if hourly_rate:
+            print(f"  You saved: ~${hourly_rate:.4f} per hour by stopping.")
     else:
-        print(f"Instance '{instance_name}' will remain running.")
-        print("Remember to stop it manually when you're done to avoid charges!")
+        print(f"  Instance '{instance_name}' will remain running.")
+        if hourly_rate:
+            print(f"  Ongoing cost: {rate_display} (~${hourly_rate * 24:.2f}/day)")
+        print("  Remember to stop it manually when you're done to avoid charges!")
 
     print("\nGoodbye!")
 
