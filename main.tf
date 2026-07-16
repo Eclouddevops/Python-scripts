@@ -1,6 +1,7 @@
 # =============================================================================
 # AWS EC2 Instance - Terraform Configuration
 # Instance: 8 vCPU, 16GB RAM, 20-30GB Storage, Ubuntu
+# Key Pair: Auto-created and stored in AWS Secrets Manager
 # =============================================================================
 
 terraform {
@@ -10,6 +11,10 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
     }
   }
 }
@@ -43,8 +48,9 @@ variable "root_volume_size" {
 }
 
 variable "key_pair_name" {
-  description = "Name of the SSH key pair for instance access"
+  description = "Name of the SSH key pair to create"
   type        = string
+  default     = "ec2-ubuntu-key"
 }
 
 variable "allowed_ssh_cidr" {
@@ -110,6 +116,56 @@ data "aws_vpc" "default" {
 }
 
 # =============================================================================
+# TLS PRIVATE KEY & AWS KEY PAIR
+# Auto-generates an SSH key pair and registers it with AWS
+# =============================================================================
+
+resource "tls_private_key" "ec2_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "ec2_key_pair" {
+  key_name   = var.key_pair_name
+  public_key = tls_private_key.ec2_key.public_key_openssh
+
+  tags = {
+    Name        = var.key_pair_name
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# =============================================================================
+# AWS SECRETS MANAGER - Store SSH Private Key
+# =============================================================================
+
+resource "aws_secretsmanager_secret" "ec2_ssh_key" {
+  name        = "ec2/${var.instance_name}/ssh-private-key"
+  description = "SSH private key for EC2 instance: ${var.instance_name} (Key Pair: ${var.key_pair_name})"
+
+  tags = {
+    Name        = "${var.instance_name}-ssh-key"
+    Environment = var.environment
+    KeyPairName = var.key_pair_name
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "ec2_ssh_key_value" {
+  secret_id = aws_secretsmanager_secret.ec2_ssh_key.id
+
+  secret_string = jsonencode({
+    private_key      = tls_private_key.ec2_key.private_key_pem
+    public_key       = tls_private_key.ec2_key.public_key_openssh
+    key_pair_name    = aws_key_pair.ec2_key_pair.key_name
+    instance_name    = var.instance_name
+    ssh_user         = "ubuntu"
+    created_by       = "terraform"
+  })
+}
+
+# =============================================================================
 # SECURITY GROUP
 # =============================================================================
 
@@ -168,7 +224,7 @@ resource "aws_security_group" "ec2_sg" {
 resource "aws_instance" "ec2" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
-  key_name                    = var.key_pair_name
+  key_name                    = aws_key_pair.ec2_key_pair.key_name
   vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
   subnet_id                   = var.subnet_id != "" ? var.subnet_id : null
   associate_public_ip_address = true
@@ -192,6 +248,8 @@ resource "aws_instance" "ec2" {
     OS          = "Ubuntu 22.04 LTS"
     ManagedBy   = "terraform"
   }
+
+  depends_on = [aws_key_pair.ec2_key_pair]
 }
 
 # =============================================================================
@@ -243,7 +301,27 @@ output "security_group_id" {
   value       = aws_security_group.ec2_sg.id
 }
 
+output "key_pair_name" {
+  description = "AWS Key Pair name assigned to the instance"
+  value       = aws_key_pair.ec2_key_pair.key_name
+}
+
+output "secrets_manager_secret_name" {
+  description = "Secrets Manager secret name containing the SSH private key"
+  value       = aws_secretsmanager_secret.ec2_ssh_key.name
+}
+
+output "secrets_manager_secret_arn" {
+  description = "Secrets Manager secret ARN"
+  value       = aws_secretsmanager_secret.ec2_ssh_key.arn
+}
+
+output "ssh_retrieve_key_command" {
+  description = "AWS CLI command to retrieve SSH private key from Secrets Manager"
+  value       = "aws secretsmanager get-secret-value --secret-id ec2/${var.instance_name}/ssh-private-key --query SecretString --output text | jq -r '.private_key' > ${var.key_pair_name}.pem && chmod 600 ${var.key_pair_name}.pem"
+}
+
 output "ssh_command" {
-  description = "SSH command to connect to the instance"
-  value       = "ssh -i ~/.ssh/${var.key_pair_name}.pem ubuntu@${aws_eip.ec2_eip.public_ip}"
+  description = "SSH command to connect (after retrieving key from Secrets Manager)"
+  value       = "ssh -i ${var.key_pair_name}.pem ubuntu@${aws_eip.ec2_eip.public_ip}"
 }
