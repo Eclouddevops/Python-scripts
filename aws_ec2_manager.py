@@ -3,12 +3,16 @@
 AWS EC2 Instance Manager Script
 - Prompts for EC2 instance name
 - Checks instance state; offers to start if stopped
-- Retrieves SSH private key from AWS Secrets Manager for secure access
-- SSHs into the instance
+- Automatically retrieves SSH private key from AWS Secrets Manager
+- SSHs into the instance (no manual SSH config needed)
 - After SSH session ends, offers to stop the instance
 
 Note: Uses default AWS credentials and region from environment
       (AWS_PROFILE, AWS_REGION, ~/.aws/config, or IAM role)
+
+SSH Key Convention:
+    Secret name in Secrets Manager: ec2/<instance_name>/ssh-private-key
+    This matches the Terraform-created secret automatically.
 """
 
 import json
@@ -24,6 +28,13 @@ try:
 except ImportError:
     print("Error: boto3 is required. Install it with: pip install boto3")
     sys.exit(1)
+
+
+# Default SSH user for Ubuntu instances
+DEFAULT_SSH_USER = "ubuntu"
+
+# Secret name pattern (matches Terraform output)
+SECRET_NAME_PATTERN = "ec2/{instance_name}/ssh-private-key"
 
 
 # =============================================================================
@@ -65,7 +76,7 @@ def get_ssh_key_from_secrets_manager(session, secret_name):
     - Plain text (the PEM key content directly)
     - JSON with a key like 'private_key', 'ssh_key', or 'pem'
     """
-    print(f"\nRetrieving SSH key from Secrets Manager: '{secret_name}'...")
+    print(f"  Retrieving SSH key from Secrets Manager: '{secret_name}'...")
 
     try:
         sm_client = session.client("secretsmanager")
@@ -73,14 +84,14 @@ def get_ssh_key_from_secrets_manager(session, secret_name):
     except ClientError as e:
         error_code = e.response["Error"]["Code"]
         if error_code == "ResourceNotFoundException":
-            print(f"Error: Secret '{secret_name}' not found in Secrets Manager.")
+            print(f"  Error: Secret '{secret_name}' not found in Secrets Manager.")
         elif error_code == "AccessDeniedException":
-            print(f"Error: Access denied to secret '{secret_name}'.")
-            print("Ensure your IAM role/user has secretsmanager:GetSecretValue permission.")
+            print(f"  Error: Access denied to secret '{secret_name}'.")
+            print("  Ensure your IAM role/user has secretsmanager:GetSecretValue permission.")
         elif error_code == "InvalidRequestException":
-            print(f"Error: Invalid request for secret '{secret_name}'.")
+            print(f"  Error: Invalid request for secret '{secret_name}'.")
         else:
-            print(f"Error retrieving secret: {e}")
+            print(f"  Error retrieving secret: {e}")
         return None
 
     # Extract the secret value
@@ -100,14 +111,13 @@ def get_ssh_key_from_secrets_manager(session, secret_name):
             if key_name in secret_json:
                 print(f"  Found SSH key in JSON field: '{key_name}'")
                 return secret_json[key_name]
-        # If none of the common names found, show available keys
-        print(f"  Available keys in secret: {list(secret_json.keys())}")
-        field = input("  Enter the JSON field name containing the SSH key: ").strip()
-        if field in secret_json:
-            return secret_json[field]
-        else:
-            print(f"  Error: Field '{field}' not found in secret.")
-            return None
+        # If none found, try the first value that looks like a PEM key
+        for key_name, value in secret_json.items():
+            if isinstance(value, str) and "BEGIN" in value and "KEY" in value:
+                print(f"  Found SSH key in JSON field: '{key_name}'")
+                return value
+        print(f"  Error: No SSH key found in secret. Available fields: {list(secret_json.keys())}")
+        return None
     except (json.JSONDecodeError, TypeError):
         # Not JSON, treat as plain text PEM key
         if "BEGIN" in secret_value and "KEY" in secret_value:
@@ -135,7 +145,7 @@ def write_temp_key_file(key_content):
 
         return tmp_file.name
     except Exception as e:
-        print(f"Error writing temporary key file: {e}")
+        print(f"  Error writing temporary key file: {e}")
         return None
 
 
@@ -308,58 +318,6 @@ def confirm(prompt):
             print("Please enter 'yes' or 'no'.")
 
 
-def get_ssh_credentials(session):
-    """Get SSH username and key (from Secrets Manager or local file)."""
-    print("\n--- SSH Access Configuration ---")
-    print("  1. Retrieve SSH key from AWS Secrets Manager (recommended)")
-    print("  2. Use local SSH key file")
-    print()
-
-    while True:
-        choice = input("Choose SSH key source (1 or 2): ").strip()
-        if choice in ("1", "2"):
-            break
-        print("Please enter 1 or 2.")
-
-    ssh_user = input("\nEnter SSH username (e.g., ec2-user, ubuntu, admin) [ec2-user]: ").strip()
-    if not ssh_user:
-        ssh_user = "ec2-user"
-
-    key_path = None
-    temp_key = False
-
-    if choice == "1":
-        # Retrieve from Secrets Manager
-        secret_name = input("Enter Secrets Manager secret name (e.g., ec2/my-server/ssh-key): ").strip()
-        if not secret_name:
-            print("Error: Secret name is required.")
-            sys.exit(1)
-
-        key_content = get_ssh_key_from_secrets_manager(session, secret_name)
-        if not key_content:
-            print("Failed to retrieve SSH key. Falling back to local file.")
-            key_path = input("Enter path to local SSH key file: ").strip()
-            if not key_path:
-                print("Error: SSH key path is required.")
-                sys.exit(1)
-        else:
-            key_path = write_temp_key_file(key_content)
-            if not key_path:
-                print("Error: Failed to write temporary key file.")
-                sys.exit(1)
-            temp_key = True
-            print("  SSH key retrieved and ready for use.")
-    else:
-        # Use local file
-        key_path = input("Enter path to SSH private key file (e.g., ~/.ssh/my-key.pem): ").strip()
-        if not key_path:
-            print("Error: SSH key path is required.")
-            sys.exit(1)
-        key_path = os.path.expanduser(key_path)
-
-    return ssh_user, key_path, temp_key
-
-
 # =============================================================================
 # MAIN WORKFLOW
 # =============================================================================
@@ -378,14 +336,14 @@ def main():
     ec2_client = session.client("ec2")
     print("  Authenticated successfully.")
 
-    # Step 2: Ask for instance name
+    # Step 2: Ask for instance name (only user prompt needed)
     instance_name = input("\nEnter EC2 instance Name tag: ").strip()
     if not instance_name:
         print("Error: Instance name is required.")
         sys.exit(1)
 
     # Step 3: Find the instance by name
-    print(f"Looking for instance with Name: '{instance_name}'...")
+    print(f"\nLooking for instance with Name: '{instance_name}'...")
     instance = find_instance_by_name(ec2_client, instance_name)
     instance_id = instance["InstanceId"]
     state = get_instance_state(instance)
@@ -433,25 +391,44 @@ def main():
         else:
             sys.exit(1)
 
-    print(f"\n  IP Address  : {public_ip}")
+    print(f"  IP Address  : {public_ip}")
 
-    # Step 6: Get SSH credentials (from Secrets Manager or local file)
+    # Step 6: Automatically retrieve SSH key from Secrets Manager
     print("\n" + "=" * 60)
-    print("  SSH Connection Setup")
+    print("  SSH Connection (Automated via Secrets Manager)")
     print("=" * 60)
 
-    ssh_user, key_path, temp_key = get_ssh_credentials(session)
+    # Auto-derive secret name from instance name
+    secret_name = SECRET_NAME_PATTERN.format(instance_name=instance_name)
+    ssh_user = DEFAULT_SSH_USER
+
+    print(f"  SSH User    : {ssh_user}")
+    print(f"  Secret Name : {secret_name}")
+
+    key_content = get_ssh_key_from_secrets_manager(session, secret_name)
+
+    if not key_content:
+        print(f"\n  Could not retrieve key from '{secret_name}'.")
+        print("  Ensure the secret exists in Secrets Manager with the SSH private key.")
+        print(f"  Expected format: ec2/<instance_name>/ssh-private-key")
+        sys.exit(1)
+
+    key_path = write_temp_key_file(key_content)
+    if not key_path:
+        print("  Error: Failed to write temporary key file.")
+        sys.exit(1)
+
+    print("  SSH key retrieved successfully. Connecting...\n")
 
     # Step 7: SSH into the instance
-    print("\n" + "=" * 60)
+    print("=" * 60)
     print("  Initiating SSH Connection")
     print("=" * 60)
 
     ssh_to_instance(public_ip, key_path, ssh_user)
 
-    # Cleanup temp key file if used
-    if temp_key:
-        cleanup_temp_key(key_path)
+    # Cleanup temp key file
+    cleanup_temp_key(key_path)
 
     # Step 8: After SSH session ends, offer to stop the instance
     print("\n" + "=" * 60)
