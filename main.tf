@@ -1,6 +1,6 @@
 # =============================================================================
 # AWS EC2 Instance - Terraform Configuration
-# Instance: 8 vCPU, 16GB RAM, 20-30GB Storage, Ubuntu
+# Instance: 8 vCPU, 16GB RAM, 80GB Storage, Ubuntu
 # Key Pair: Auto-created and stored in AWS Secrets Manager
 # =============================================================================
 
@@ -44,7 +44,7 @@ variable "instance_type" {
 variable "root_volume_size" {
   description = "Root EBS volume size in GB"
   type        = number
-  default     = 30
+  default     = 80
 }
 
 variable "key_pair_name" {
