@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AWS DevOps Agent Setup Script (Python)
+AWS DevOps Agent Setup Script (Python - using AWS CLI)
 
 Account: 226563001214
 Region: us-east-1
@@ -8,26 +8,22 @@ Includes: New Relic Integration
 
 Prerequisites:
     - Python 3.8+
-    - boto3 installed (pip install boto3)
-    - AWS credentials configured (~/.aws/credentials or environment variables)
+    - AWS CLI v2 installed and configured
     - IAM permissions to create roles and attach policies
 
 Usage:
-    pip install boto3
     python setup_devops_agent.py
+
+Cleanup:
+    python setup_devops_agent.py --cleanup <AGENT_SPACE_ID>
 """
 
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import time
-from typing import Optional
-
-try:
-    import boto3
-    from botocore.exceptions import ClientError, NoCredentialsError
-except ImportError:
-    print("ERROR: boto3 is required. Install it with: pip install boto3")
-    sys.exit(1)
 
 
 # ============================================================
@@ -40,8 +36,6 @@ CONFIG = {
     "agent_space_description": "DevOps Agent Space for monitoring AWS infrastructure",
     "auth_flow": "iam",
     # AWS Profile (from ~/.aws/config)
-    # Available profiles: DevOps-Role, swap-devops, devops-team, ethinos,
-    #   ethinos-prod, core-nonprod-workload, core-prod-workload, etc.
     "aws_profile": "DevOps-Role",
     # IAM Role Names
     "agentspace_role_name": "DevOpsAgentRole-AgentSpace",
@@ -59,73 +53,117 @@ CONFIG = {
 # HELPER FUNCTIONS
 # ============================================================
 def log_step(step_num: int, title: str):
-    """Print a formatted step header."""
     print(f"\n{'=' * 60}")
     print(f"  Step {step_num}: {title}")
     print(f"{'=' * 60}")
 
 
 def log_success(message: str):
-    """Print a success message."""
     print(f"  [OK] {message}")
 
 
 def log_error(message: str):
-    """Print an error message."""
     print(f"  [ERROR] {message}")
 
 
 def log_warning(message: str):
-    """Print a warning message."""
     print(f"  [WARNING] {message}")
 
 
 def log_info(message: str):
-    """Print an info message."""
     print(f"  [INFO] {message}")
 
 
-def get_boto3_session():
-    """Get a boto3 session using the configured profile."""
+def run_aws_cli(args: list, capture_output=True, check=True) -> dict:
+    """
+    Run an AWS CLI command and return parsed JSON output.
+    Uses the configured profile and region.
+    """
+    cmd = ["aws"] + args
+
+    # Add profile if configured
     profile = CONFIG.get("aws_profile")
-    if profile:
-        return boto3.Session(profile_name=profile, region_name=CONFIG["region"])
-    return boto3.Session(region_name=CONFIG["region"])
+    if profile and "--profile" not in args:
+        cmd += ["--profile", profile]
+
+    # Add region if not already specified
+    if "--region" not in args:
+        cmd += ["--region", CONFIG["region"]]
+
+    # Always request JSON output for parsing
+    if "--output" not in args:
+        cmd += ["--output", "json"]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=capture_output,
+            text=True,
+            check=check,
+        )
+
+        if result.stdout and result.stdout.strip():
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                return {"raw_output": result.stdout.strip()}
+        return {}
+
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.strip() if e.stderr else str(e)
+        if check:
+            raise RuntimeError(f"AWS CLI command failed: {error_msg}")
+        return {"error": error_msg}
 
 
-def get_iam_client():
-    """Get IAM client."""
-    session = get_boto3_session()
-    return session.client("iam")
+def run_aws_cli_raw(args: list, check=True) -> subprocess.CompletedProcess:
+    """Run AWS CLI and return the raw result (for error checking)."""
+    cmd = ["aws"] + args
+
+    profile = CONFIG.get("aws_profile")
+    if profile and "--profile" not in args:
+        cmd += ["--profile", profile]
+
+    if "--region" not in args:
+        cmd += ["--region", CONFIG["region"]]
+
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
-def get_devops_agent_client():
-    """Get DevOps Agent client."""
-    session = get_boto3_session()
-    return session.client("devops-agent")
-
-
-def get_sts_client():
-    """Get STS client."""
-    session = get_boto3_session()
-    return session.client("sts")
+def write_temp_json(data: dict, filename: str) -> str:
+    """Write JSON to a temp file and return the path (cross-platform)."""
+    temp_dir = tempfile.gettempdir()
+    filepath = os.path.join(temp_dir, filename)
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2)
+    return filepath
 
 
 # ============================================================
 # STEP 0: Check Prerequisites
 # ============================================================
 def check_prerequisites() -> bool:
-    """Verify AWS credentials and account."""
     log_step(0, "Checking Prerequisites")
+
+    # Check AWS CLI is installed
+    try:
+        result = subprocess.run(
+            ["aws", "--version"], capture_output=True, text=True, check=True
+        )
+        log_success(f"AWS CLI: {result.stdout.strip()}")
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        log_error("AWS CLI is not installed or not in PATH.")
+        log_info("Install from: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html")
+        return False
 
     log_info(f"Using AWS Profile: {CONFIG.get('aws_profile', 'default')}")
 
+    # Verify credentials
     try:
-        sts = get_sts_client()
-        identity = sts.get_caller_identity()
-        caller_account = identity["Account"]
+        identity = run_aws_cli(["sts", "get-caller-identity"])
+        caller_account = identity.get("Account", "unknown")
         log_success(f"Authenticated as account: {caller_account}")
-        log_info(f"ARN: {identity['Arn']}")
+        log_info(f"ARN: {identity.get('Arn', 'N/A')}")
 
         if caller_account != CONFIG["monitoring_account_id"]:
             log_warning(
@@ -136,12 +174,9 @@ def check_prerequisites() -> bool:
             if response != "y":
                 return False
 
-    except NoCredentialsError:
-        log_error("AWS credentials not configured.")
-        log_info("Run 'aws configure' or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
-        return False
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to verify credentials: {e}")
+        log_info("Run 'aws configure' or check your profile settings.")
         return False
 
     # Check New Relic API key
@@ -161,25 +196,19 @@ def check_prerequisites() -> bool:
 # STEP 1: Create Agent Space IAM Role
 # ============================================================
 def create_agentspace_role() -> bool:
-    """Create the Agent Space IAM role with required policies."""
     log_step(1, "Creating Agent Space IAM Role")
 
-    iam = get_iam_client()
     role_name = CONFIG["agentspace_role_name"]
     account_id = CONFIG["monitoring_account_id"]
     region = CONFIG["region"]
 
     # Check if role already exists
-    try:
-        iam.get_role(RoleName=role_name)
+    result = run_aws_cli_raw(["iam", "get-role", "--role-name", role_name], check=False)
+    if result.returncode == 0:
         log_info(f"Role '{role_name}' already exists. Skipping creation.")
         return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "NoSuchEntity":
-            log_error(f"Error checking role: {e}")
-            return False
 
-    # Trust policy
+    # Create trust policy
     trust_policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -197,23 +226,27 @@ def create_agentspace_role() -> bool:
         ],
     }
 
+    trust_policy_file = write_temp_json(trust_policy, "devops-agentspace-trust-policy.json")
+
     try:
         # Create the role
-        iam.create_role(
-            RoleName=role_name,
-            AssumeRolePolicyDocument=json.dumps(trust_policy),
-            Description="IAM role for AWS DevOps Agent Space",
-        )
+        run_aws_cli([
+            "iam", "create-role",
+            "--role-name", role_name,
+            "--assume-role-policy-document", f"file://{trust_policy_file}",
+            "--description", "IAM role for AWS DevOps Agent Space",
+        ])
         log_success(f"Created role: {role_name}")
 
         # Attach managed policy
-        iam.attach_role_policy(
-            RoleName=role_name,
-            PolicyArn="arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy",
-        )
+        run_aws_cli([
+            "iam", "attach-role-policy",
+            "--role-name", role_name,
+            "--policy-arn", "arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy",
+        ])
         log_success("Attached AIDevOpsAgentAccessPolicy")
 
-        # Attach inline policy for Resource Explorer SLR
+        # Create inline policy for Resource Explorer SLR
         inline_policy = {
             "Version": "2012-10-17",
             "Statement": [
@@ -229,14 +262,17 @@ def create_agentspace_role() -> bool:
             ],
         }
 
-        iam.put_role_policy(
-            RoleName=role_name,
-            PolicyName="AllowCreateServiceLinkedRoles",
-            PolicyDocument=json.dumps(inline_policy),
-        )
+        inline_policy_file = write_temp_json(inline_policy, "devops-agentspace-additional-policy.json")
+
+        run_aws_cli([
+            "iam", "put-role-policy",
+            "--role-name", role_name,
+            "--policy-name", "AllowCreateServiceLinkedRoles",
+            "--policy-document", f"file://{inline_policy_file}",
+        ])
         log_success("Attached inline policy: AllowCreateServiceLinkedRoles")
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to create Agent Space role: {e}")
         return False
 
@@ -247,25 +283,19 @@ def create_agentspace_role() -> bool:
 # STEP 2: Create Operator App IAM Role
 # ============================================================
 def create_operator_role() -> bool:
-    """Create the Operator App IAM role."""
     log_step(2, "Creating Operator App IAM Role")
 
-    iam = get_iam_client()
     role_name = CONFIG["operator_role_name"]
     account_id = CONFIG["monitoring_account_id"]
     region = CONFIG["region"]
 
     # Check if role already exists
-    try:
-        iam.get_role(RoleName=role_name)
+    result = run_aws_cli_raw(["iam", "get-role", "--role-name", role_name], check=False)
+    if result.returncode == 0:
         log_info(f"Role '{role_name}' already exists. Skipping creation.")
         return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "NoSuchEntity":
-            log_error(f"Error checking role: {e}")
-            return False
 
-    # Trust policy
+    # Create trust policy
     trust_policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -283,23 +313,27 @@ def create_operator_role() -> bool:
         ],
     }
 
+    trust_policy_file = write_temp_json(trust_policy, "devops-operator-trust-policy.json")
+
     try:
         # Create the role
-        iam.create_role(
-            RoleName=role_name,
-            AssumeRolePolicyDocument=json.dumps(trust_policy),
-            Description="IAM role for AWS DevOps Agent Operator Web App",
-        )
+        run_aws_cli([
+            "iam", "create-role",
+            "--role-name", role_name,
+            "--assume-role-policy-document", f"file://{trust_policy_file}",
+            "--description", "IAM role for AWS DevOps Agent Operator Web App",
+        ])
         log_success(f"Created role: {role_name}")
 
         # Attach managed policy
-        iam.attach_role_policy(
-            RoleName=role_name,
-            PolicyArn="arn:aws:iam::aws:policy/AIDevOpsOperatorAppAccessPolicy",
-        )
+        run_aws_cli([
+            "iam", "attach-role-policy",
+            "--role-name", role_name,
+            "--policy-arn", "arn:aws:iam::aws:policy/AIDevOpsOperatorAppAccessPolicy",
+        ])
         log_success("Attached AIDevOpsOperatorAppAccessPolicy")
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to create Operator role: {e}")
         return False
 
@@ -309,29 +343,31 @@ def create_operator_role() -> bool:
 # ============================================================
 # STEP 3: Create the Agent Space
 # ============================================================
-def create_agent_space() -> Optional[str]:
-    """Create the DevOps Agent Space and return its ID."""
+def create_agent_space():
     log_step(3, "Creating Agent Space")
 
-    # Wait for IAM role propagation
     log_info("Waiting 10 seconds for IAM role propagation...")
     time.sleep(10)
 
-    client = get_devops_agent_client()
-
     try:
-        response = client.create_agent_space(
-            name=CONFIG["agent_space_name"],
-            description=CONFIG["agent_space_description"],
-        )
+        response = run_aws_cli([
+            "devops-agent", "create-agent-space",
+            "--name", CONFIG["agent_space_name"],
+            "--description", CONFIG["agent_space_description"],
+        ])
 
-        agent_space_id = response["agentSpace"]["agentSpaceId"]
-        log_success(f"Agent Space created!")
+        agent_space_id = response.get("agentSpace", {}).get("agentSpaceId")
+
+        if not agent_space_id:
+            log_error(f"Failed to extract Agent Space ID. Response: {response}")
+            return None
+
+        log_success("Agent Space created!")
         log_info(f"Name: {CONFIG['agent_space_name']}")
         log_info(f"ID:   {agent_space_id}")
         return agent_space_id
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to create Agent Space: {e}")
         return None
 
@@ -340,31 +376,30 @@ def create_agent_space() -> Optional[str]:
 # STEP 4: Associate AWS Account
 # ============================================================
 def associate_aws_account(agent_space_id: str) -> bool:
-    """Associate the monitoring AWS account with the Agent Space."""
     log_step(4, "Associating AWS Account")
 
-    client = get_devops_agent_client()
     account_id = CONFIG["monitoring_account_id"]
     role_name = CONFIG["agentspace_role_name"]
 
-    configuration = {
+    configuration = json.dumps({
         "aws": {
             "assumableRoleArn": f"arn:aws:iam::{account_id}:role/{role_name}",
             "accountId": account_id,
             "accountType": "monitor",
         }
-    }
+    })
 
     try:
-        client.associate_service(
-            agentSpaceId=agent_space_id,
-            serviceId="aws",
-            configuration=configuration,
-        )
+        run_aws_cli([
+            "devops-agent", "associate-service",
+            "--agent-space-id", agent_space_id,
+            "--service-id", "aws",
+            "--configuration", configuration,
+        ])
         log_success("AWS account associated as monitor account.")
         return True
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to associate AWS account: {e}")
         return False
 
@@ -373,23 +408,22 @@ def associate_aws_account(agent_space_id: str) -> bool:
 # STEP 5: Enable Operator App
 # ============================================================
 def enable_operator_app(agent_space_id: str) -> bool:
-    """Enable the Operator Web App for the Agent Space."""
     log_step(5, "Enabling Operator Web App")
 
-    client = get_devops_agent_client()
     account_id = CONFIG["monitoring_account_id"]
     role_name = CONFIG["operator_role_name"]
 
     try:
-        client.enable_operator_app(
-            agentSpaceId=agent_space_id,
-            authFlow=CONFIG["auth_flow"],
-            operatorAppRoleArn=f"arn:aws:iam::{account_id}:role/{role_name}",
-        )
+        run_aws_cli([
+            "devops-agent", "enable-operator-app",
+            "--agent-space-id", agent_space_id,
+            "--auth-flow", CONFIG["auth_flow"],
+            "--operator-app-role-arn", f"arn:aws:iam::{account_id}:role/{role_name}",
+        ])
         log_success(f"Operator Web App enabled (auth-flow: {CONFIG['auth_flow']})")
         return True
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to enable Operator App: {e}")
         return False
 
@@ -398,7 +432,6 @@ def enable_operator_app(agent_space_id: str) -> bool:
 # STEP 6: Register and Associate New Relic
 # ============================================================
 def setup_new_relic(agent_space_id: str) -> bool:
-    """Register and associate New Relic with the Agent Space."""
     log_step(6, "Setting Up New Relic Integration")
 
     nr_config = CONFIG["new_relic"]
@@ -407,12 +440,10 @@ def setup_new_relic(agent_space_id: str) -> bool:
         log_info("Skipping New Relic integration (no API key provided).")
         return True
 
-    client = get_devops_agent_client()
-
     # Register New Relic service
     log_info("Registering New Relic service...")
 
-    service_details = {
+    service_details = json.dumps({
         "mcpservernewrelic": {
             "authorizationConfig": {
                 "apiKey": {
@@ -422,41 +453,48 @@ def setup_new_relic(agent_space_id: str) -> bool:
                 }
             }
         }
-    }
+    })
 
     try:
-        register_response = client.register_service(
-            service="mcpservernewrelic",
-            serviceDetails=service_details,
-        )
+        register_response = run_aws_cli([
+            "devops-agent", "register-service",
+            "--service", "mcpservernewrelic",
+            "--service-details", service_details,
+        ])
 
-        service_id = register_response["serviceId"]
+        service_id = register_response.get("serviceId")
+
+        if not service_id:
+            log_error(f"Failed to get service ID. Response: {register_response}")
+            return False
+
         log_success(f"New Relic registered with Service ID: {service_id}")
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to register New Relic: {e}")
         return False
 
     # Associate New Relic with Agent Space
     log_info("Associating New Relic with Agent Space...")
 
-    association_config = {
+    association_config = json.dumps({
         "mcpservernewrelic": {
             "accountId": nr_config["account_id"],
             "endpoint": "https://mcp.newrelic.com/mcp/",
         }
-    }
+    })
 
     try:
-        client.associate_service(
-            agentSpaceId=agent_space_id,
-            serviceId=service_id,
-            configuration=association_config,
-        )
+        run_aws_cli([
+            "devops-agent", "associate-service",
+            "--agent-space-id", agent_space_id,
+            "--service-id", service_id,
+            "--configuration", association_config,
+        ])
         log_success("New Relic associated with Agent Space!")
         return True
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Failed to associate New Relic: {e}")
         return False
 
@@ -465,27 +503,31 @@ def setup_new_relic(agent_space_id: str) -> bool:
 # STEP 7: Verification
 # ============================================================
 def verify_setup(agent_space_id: str) -> bool:
-    """Verify the Agent Space setup."""
     log_step(7, "Verifying Setup")
-
-    client = get_devops_agent_client()
 
     try:
         # Get agent space details
         log_info("Getting agent space details...")
-        space_details = client.get_agent_space(agentSpaceId=agent_space_id)
-        log_success(f"Agent Space: {space_details['agentSpace']['name']}")
-        log_info(f"Status: {space_details['agentSpace'].get('status', 'N/A')}")
+        space_details = run_aws_cli([
+            "devops-agent", "get-agent-space",
+            "--agent-space-id", agent_space_id,
+        ])
+        space = space_details.get("agentSpace", {})
+        log_success(f"Agent Space: {space.get('name', 'N/A')}")
+        log_info(f"Status: {space.get('status', 'N/A')}")
 
         # List associations
         log_info("Listing associations...")
-        associations = client.list_associations(agentSpaceId=agent_space_id)
+        associations = run_aws_cli([
+            "devops-agent", "list-associations",
+            "--agent-space-id", agent_space_id,
+        ])
         for assoc in associations.get("associations", []):
             log_success(f"Association: {assoc.get('serviceId', 'unknown')} - {assoc.get('status', 'N/A')}")
 
         return True
 
-    except ClientError as e:
+    except RuntimeError as e:
         log_error(f"Verification failed: {e}")
         return False
 
@@ -494,7 +536,6 @@ def verify_setup(agent_space_id: str) -> bool:
 # SUMMARY
 # ============================================================
 def print_summary(agent_space_id: str):
-    """Print the setup summary."""
     region = CONFIG["region"]
     print(f"\n{'=' * 60}")
     print(f"  SETUP COMPLETE!")
@@ -525,7 +566,7 @@ def print_summary(agent_space_id: str):
 # ============================================================
 # CLEANUP (Optional)
 # ============================================================
-def cleanup(agent_space_id: Optional[str] = None):
+def cleanup(agent_space_id=None):
     """Delete all resources created by this script."""
     print("\n  WARNING: This will delete all DevOps Agent resources!")
     response = input("  Are you sure? (type 'DELETE' to confirm): ").strip()
@@ -534,47 +575,71 @@ def cleanup(agent_space_id: Optional[str] = None):
         print("  Cleanup cancelled.")
         return
 
-    client = get_devops_agent_client()
-    iam = get_iam_client()
-
     # Delete agent space
     if agent_space_id:
         try:
-            client.delete_agent_space(agentSpaceId=agent_space_id)
+            run_aws_cli([
+                "devops-agent", "delete-agent-space",
+                "--agent-space-id", agent_space_id,
+            ])
             log_success(f"Deleted Agent Space: {agent_space_id}")
-        except ClientError as e:
+        except RuntimeError as e:
             log_error(f"Failed to delete Agent Space: {e}")
 
     # Delete IAM roles
     for role_name in [CONFIG["agentspace_role_name"], CONFIG["operator_role_name"]]:
         try:
-            # Detach managed policies
-            attached = iam.list_attached_role_policies(RoleName=role_name)
-            for policy in attached["AttachedPolicies"]:
-                iam.detach_role_policy(RoleName=role_name, PolicyArn=policy["PolicyArn"])
+            # List and detach managed policies
+            result = run_aws_cli_raw([
+                "iam", "list-attached-role-policies",
+                "--role-name", role_name,
+                "--output", "json",
+            ], check=False)
 
-            # Delete inline policies
-            inline = iam.list_role_policies(RoleName=role_name)
-            for policy_name in inline["PolicyNames"]:
-                iam.delete_role_policy(RoleName=role_name, PolicyName=policy_name)
+            if result.returncode == 0 and result.stdout:
+                policies = json.loads(result.stdout).get("AttachedPolicies", [])
+                for policy in policies:
+                    run_aws_cli_raw([
+                        "iam", "detach-role-policy",
+                        "--role-name", role_name,
+                        "--policy-arn", policy["PolicyArn"],
+                    ], check=False)
+
+            # List and delete inline policies
+            result = run_aws_cli_raw([
+                "iam", "list-role-policies",
+                "--role-name", role_name,
+                "--output", "json",
+            ], check=False)
+
+            if result.returncode == 0 and result.stdout:
+                policy_names = json.loads(result.stdout).get("PolicyNames", [])
+                for policy_name in policy_names:
+                    run_aws_cli_raw([
+                        "iam", "delete-role-policy",
+                        "--role-name", role_name,
+                        "--policy-name", policy_name,
+                    ], check=False)
 
             # Delete the role
-            iam.delete_role(RoleName=role_name)
+            run_aws_cli_raw([
+                "iam", "delete-role",
+                "--role-name", role_name,
+            ], check=False)
             log_success(f"Deleted role: {role_name}")
 
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "NoSuchEntity":
-                log_error(f"Failed to delete role {role_name}: {e}")
+        except Exception as e:
+            log_error(f"Failed to delete role {role_name}: {e}")
 
 
 # ============================================================
 # MAIN
 # ============================================================
 def main():
-    """Main execution flow."""
     print()
     print(f"  AWS DevOps Agent Setup Script (Python)")
     print(f"  Account: {CONFIG['monitoring_account_id']} | Region: {CONFIG['region']}")
+    print(f"  Profile: {CONFIG.get('aws_profile', 'default')}")
     print()
 
     # Handle cleanup mode
