@@ -18,6 +18,12 @@
 set -euo pipefail
 
 # ============================================================
+# TEMP DIRECTORY - Cross-platform (Linux/macOS/Windows Git Bash)
+# ============================================================
+TMPDIR="${TMPDIR:-${TEMP:-${TMP:-/tmp}}}"
+mkdir -p "$TMPDIR"
+
+# ============================================================
 # CONFIGURATION - Update these values as needed
 # ============================================================
 MONITORING_ACCOUNT_ID="226563001214"
@@ -110,7 +116,7 @@ create_agentspace_role() {
     fi
 
     # Create trust policy
-    cat > /tmp/devops-agentspace-trust-policy.json << EOF
+    cat > "$TMPDIR/devops-agentspace-trust-policy.json" << EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -136,7 +142,7 @@ EOF
     # Create the role
     aws iam create-role \
         --role-name "$AGENTSPACE_ROLE_NAME" \
-        --assume-role-policy-document file:///tmp/devops-agentspace-trust-policy.json \
+        --assume-role-policy-document "file://$TMPDIR/devops-agentspace-trust-policy.json" \
         --region "$REGION"
 
     echo "Role created: $AGENTSPACE_ROLE_NAME"
@@ -149,7 +155,7 @@ EOF
     echo "Attached AIDevOpsAgentAccessPolicy"
 
     # Create and attach inline policy for Resource Explorer SLR
-    cat > /tmp/devops-agentspace-additional-policy.json << EOF
+    cat > "$TMPDIR/devops-agentspace-additional-policy.json" << EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -170,7 +176,7 @@ EOF
     aws iam put-role-policy \
         --role-name "$AGENTSPACE_ROLE_NAME" \
         --policy-name AllowCreateServiceLinkedRoles \
-        --policy-document file:///tmp/devops-agentspace-additional-policy.json
+        --policy-document "file://$TMPDIR/devops-agentspace-additional-policy.json"
 
     echo "Attached inline policy: AllowCreateServiceLinkedRoles"
     echo "Step 1 complete!"
@@ -189,7 +195,7 @@ create_operator_role() {
     fi
 
     # Create trust policy
-    cat > /tmp/devops-operator-trust-policy.json << EOF
+    cat > "$TMPDIR/devops-operator-trust-policy.json" << EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -218,7 +224,7 @@ EOF
     # Create the role
     aws iam create-role \
         --role-name "$OPERATOR_ROLE_NAME" \
-        --assume-role-policy-document file:///tmp/devops-operator-trust-policy.json \
+        --assume-role-policy-document "file://$TMPDIR/devops-operator-trust-policy.json" \
         --region "$REGION"
 
     echo "Role created: $OPERATOR_ROLE_NAME"
