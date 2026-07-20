@@ -11,3 +11,6 @@ allowed_ssh_cidr = "0.0.0.0/0"    # Restrict this to your IP for security
 environment      = "dev"
 # vpc_id         = ""              # Optional: Leave empty for default VPC
 # subnet_id      = ""              # Optional: Leave empty for default subnet
+
+# Cross-account access to Secrets Manager (your IAM account)
+allowed_iam_arns = ["arn:aws:iam::226563001214:root"]

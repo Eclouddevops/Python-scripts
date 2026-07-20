@@ -59,6 +59,12 @@ variable "allowed_ssh_cidr" {
   default     = "0.0.0.0/0"
 }
 
+variable "allowed_iam_arns" {
+  description = "List of IAM ARNs allowed to access the SSH key in Secrets Manager (for cross-account access)"
+  type        = list(string)
+  default     = ["arn:aws:iam::226563001214:root"]
+}
+
 variable "environment" {
   description = "Environment tag (e.g., dev, staging, production)"
   type        = string
@@ -141,8 +147,9 @@ resource "aws_key_pair" "ec2_key_pair" {
 # =============================================================================
 
 resource "aws_secretsmanager_secret" "ec2_ssh_key" {
-  name        = "ec2/${var.instance_name}/ssh-private-key"
-  description = "SSH private key for EC2 instance: ${var.instance_name} (Key Pair: ${var.key_pair_name})"
+  name                    = "ec2/${var.instance_name}/ssh-private-key"
+  description             = "SSH private key for EC2 instance: ${var.instance_name} (Key Pair: ${var.key_pair_name})"
+  recovery_window_in_days = 0
 
   tags = {
     Name        = "${var.instance_name}-ssh-key"
@@ -150,6 +157,33 @@ resource "aws_secretsmanager_secret" "ec2_ssh_key" {
     KeyPairName = var.key_pair_name
     ManagedBy   = "terraform"
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Resource policy for cross-account access (grants account 226563001214 access)
+resource "aws_secretsmanager_secret_policy" "ec2_ssh_key_policy" {
+  secret_arn = aws_secretsmanager_secret.ec2_ssh_key.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowCrossAccountAccess"
+        Effect    = "Allow"
+        Principal = { AWS = var.allowed_iam_arns }
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetResourcePolicy",
+          "secretsmanager:ListSecretVersionIds"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_secretsmanager_secret_version" "ec2_ssh_key_value" {
