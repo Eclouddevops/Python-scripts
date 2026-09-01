@@ -34,10 +34,10 @@ resource "aws_secretsmanager_secret_version" "vsftp" {
   secret_string = jsonencode({
     username   = var.vsftp_username
     password   = local.vsftp_password
-    host       = aws_instance.this.public_ip
+    host       = local.public_ip
     port       = 22
     protocol   = "SFTP"
     upload_dir = var.vsftp_upload_dir
-    note       = "Connect with: sftp ${var.vsftp_username}@${aws_instance.this.public_ip} (password auth). Files live under '${var.vsftp_upload_dir}'."
+    note       = "Connect with: sftp ${var.vsftp_username}@${local.public_ip} (password auth). Files live under '${var.vsftp_upload_dir}'."
   })
 }

@@ -69,6 +69,16 @@ variable "associate_public_ip" {
   default     = true
 }
 
+variable "enable_elastic_ip" {
+  description = <<-EOT
+    Whether to allocate an Elastic IP and associate it with the instance so the
+    server keeps a FIXED public IP across stop/start and instance replacement.
+    Recommended for SFTP/FTP so external users don't have to update the host.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "allowed_ssh_cidrs" {
   description = "List of CIDR blocks allowed to connect via SSH/SFTP (port 22). Restrict this in production."
   type        = list(string)

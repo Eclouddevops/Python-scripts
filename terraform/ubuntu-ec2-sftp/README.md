@@ -17,12 +17,14 @@ a login page, and the SSH private key stored securely in **AWS Secrets Manager**
 | `aws_secretsmanager_secret` (vsftpuser) | Stores the **external FTP user** credentials (username + password) |
 | `random_password` | Generates strong passwords (dashboard + vsftpuser) |
 | `aws_ebs_volume` (100 GiB) + attachment | **Dedicated encrypted FTP storage volume**, mounted at `/srv/ftp` |
+| `aws_eip` + association | **Elastic IP** — a fixed public IP that survives stop/start & replacement |
 | `aws_security_group` | Allows SSH/SFTP on port 22 (+ dashboard port when enabled) |
 | `aws_instance` | Ubuntu 22.04 LTS instance (IMDSv2, encrypted gp3 root volume) |
 | cloud-init `user_data` | Mounts the FTP volume, creates the SFTP users, installs the dashboard |
 
 ## Key design points
 
+- **Static Elastic IP** — the server is assigned a fixed public IP that stays the same across stop/start and instance replacement, so external users never have to change the host they connect to. Enabled by default (`enable_elastic_ip = true`).
 - **Dedicated 100 GiB FTP storage** — a separate encrypted EBS volume is mounted at `/srv/ftp`. All FTP/SFTP users and the dashboard store files here, so FTP space is not limited by the small root disk. The volume survives instance replacement and can be resized independently.
 - **Two SFTP users:**
   - `sftpuser` — **key-based** (uses the generated SSH key), for internal/automated use.
@@ -150,6 +152,7 @@ Files land on the dedicated **100 GiB** volume at `/srv/ftp/vsftpuser/files`.
 | `environment` | `prod` | Environment tag |
 | `instance_type` | `t3.micro` | EC2 instance type |
 | `root_volume_size` | `20` | Root EBS size (GiB) |
+| `enable_elastic_ip` | `true` | Allocate a fixed Elastic IP for the server |
 | `allowed_ssh_cidrs` | `["0.0.0.0/0"]` | **Restrict this in production** |
 | `sftp_username` | `sftpuser` | Key-based SFTP account |
 | `sftp_upload_dir` | `upload` | Writable dir inside chroot |
