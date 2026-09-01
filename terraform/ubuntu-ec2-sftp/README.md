@@ -35,9 +35,11 @@ export AWS_PROFILE=CoreProdWorkloadAccount
 aws sts get-caller-identity   # should show account 986788162487
 ```
 
-> The provider also assumes `arn:aws:iam::986788162487:role/OrganizationAccountAccessRole`
-> by default. If your profile already resolves to the account, you can remove
-> the `assume_role` block in `providers.tf`.
+> **Authentication:** By default (`enable_assume_role = false`) the provider uses
+> your current credentials directly. Since the `CoreProdWorkloadAccount` profile
+> *already* assumes `OrganizationAccountAccessRole`, Terraform must **not** assume
+> it again (a role cannot re-assume itself). Only set `enable_assume_role = true`
+> when running from a different base account that is allowed to assume the role.
 
 ## Usage
 
@@ -81,7 +83,8 @@ sftp> put localfile.txt
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `aws_region` | `ap-south-1` | AWS region (Mumbai) |
-| `assume_role_arn` | Org role ARN | Role to assume in the account |
+| `enable_assume_role` | `false` | Whether to assume `assume_role_arn` (keep false if profile already resolves to the account) |
+| `assume_role_arn` | Org role ARN | Role to assume (only used when `enable_assume_role = true`) |
 | `project_name` | `ubuntu-base` | Resource name prefix |
 | `environment` | `prod` | Environment tag |
 | `instance_type` | `t3.micro` | EC2 instance type |

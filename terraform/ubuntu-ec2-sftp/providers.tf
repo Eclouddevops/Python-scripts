@@ -1,22 +1,31 @@
 ###############################################################################
 # AWS Provider
 #
-# Authenticates against the CoreProdWorkloadAccount by assuming the
-# OrganizationAccountAccessRole. You can either:
-#   1. Use an AWS profile (recommended):  export AWS_PROFILE=CoreProdWorkloadAccount
-#      and remove the assume_role block below, OR
-#   2. Let Terraform assume the role directly (default below).
+# Authentication is flexible and controlled by the `enable_assume_role` variable:
+#
+#   * DEFAULT (enable_assume_role = false):
+#       Uses your current credentials directly. This is the correct setting when
+#       your AWS profile ALREADY resolves to the target account, e.g.:
+#         export AWS_PROFILE=CoreProdWorkloadAccount
+#       (The CoreProdWorkloadAccount profile already assumes the
+#        OrganizationAccountAccessRole, so Terraform must NOT assume it again —
+#        a role cannot re-assume itself.)
+#
+#   * enable_assume_role = true:
+#       Terraform assumes `assume_role_arn` from a DIFFERENT set of base
+#       credentials (e.g. running from a management/tooling account that has
+#       permission to assume the Organization access role).
 ###############################################################################
 
 provider "aws" {
   region = var.aws_region
 
-  # Assume the Organization access role in the target account.
-  # Comment this block out if you are already using an AWS_PROFILE that
-  # resolves to the correct account.
-  assume_role {
-    role_arn     = var.assume_role_arn
-    session_name = "terraform-ubuntu-ec2-sftp"
+  dynamic "assume_role" {
+    for_each = var.enable_assume_role ? [1] : []
+    content {
+      role_arn     = var.assume_role_arn
+      session_name = "terraform-ubuntu-ec2-sftp"
+    }
   }
 
   default_tags {

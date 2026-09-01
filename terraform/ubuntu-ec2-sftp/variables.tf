@@ -8,8 +8,21 @@ variable "aws_region" {
   default     = "ap-south-1"
 }
 
+variable "enable_assume_role" {
+  description = <<-EOT
+    Whether Terraform should assume `assume_role_arn`.
+    Keep this FALSE (default) when your AWS profile already resolves to the
+    target account (e.g. AWS_PROFILE=CoreProdWorkloadAccount) — otherwise the
+    role would try to re-assume itself and fail with an AccessDenied error.
+    Set to TRUE only when running from a different base account that is allowed
+    to assume the Organization access role.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "assume_role_arn" {
-  description = "IAM role ARN to assume in the target AWS account."
+  description = "IAM role ARN to assume in the target AWS account. Only used when enable_assume_role = true."
   type        = string
   default     = "arn:aws:iam::986788162487:role/OrganizationAccountAccessRole"
 }

@@ -1,7 +1,12 @@
 # Example variable overrides — copy to terraform.tfvars and edit as needed.
 
-aws_region      = "ap-south-1"
-assume_role_arn = "arn:aws:iam::986788162487:role/OrganizationAccountAccessRole"
+aws_region = "ap-south-1"
+
+# Keep false when your AWS profile already resolves to the target account
+# (e.g. AWS_PROFILE=CoreProdWorkloadAccount). Set true only to assume the role
+# from a different base account.
+enable_assume_role = false
+assume_role_arn    = "arn:aws:iam::986788162487:role/OrganizationAccountAccessRole"
 
 project_name  = "ubuntu-base"
 environment   = "prod"
