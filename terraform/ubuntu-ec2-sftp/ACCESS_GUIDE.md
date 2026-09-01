@@ -11,6 +11,10 @@ by this Terraform module:
 
 > **Storage:** all FTP/SFTP files live on a dedicated **100 GiB encrypted EBS
 > volume** mounted at `/srv/ftp` — separate from the OS disk.
+>
+> **Fixed IP:** the server has a static **Elastic IP** — the public address
+> stays the same across restarts and instance replacement, so you never have to
+> update the host you connect to. Get it with `terraform output elastic_ip`.
 
 > All credentials are stored in **AWS Secrets Manager**. Nothing is committed to
 > the repo or written to disk by Terraform.
@@ -43,7 +47,8 @@ Key outputs you'll use:
 
 | Output | Example | What it is |
 |--------|---------|------------|
-| `instance_public_ip` | `13.127.46.86` | The server IP |
+| `instance_public_ip` | `13.127.46.86` | The server IP (the Elastic IP when enabled) |
+| `elastic_ip` | `13.127.46.86` | The fixed Elastic IP address |
 | `ssh_key_secret_name` | `ubuntu-sftp-prod/ec2/ssh-private-key` | Secret holding the SSH key |
 | `web_dashboard_url` | `http://13.127.46.86:8080` | Browser dashboard URL |
 | `web_dashboard_secret_name` | `ubuntu-sftp-prod/dashboard/credentials` | Secret holding dashboard login |

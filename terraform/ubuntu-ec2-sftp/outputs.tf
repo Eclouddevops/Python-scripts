@@ -8,8 +8,13 @@ output "instance_id" {
 }
 
 output "instance_public_ip" {
-  description = "Public IP address of the instance."
-  value       = aws_instance.this.public_ip
+  description = "Public IP address clients should use (Elastic IP when enabled, else the dynamic public IP)."
+  value       = local.public_ip
+}
+
+output "elastic_ip" {
+  description = "The Elastic IP address (or 'disabled' when not enabled)."
+  value       = var.enable_elastic_ip ? aws_eip.this[0].public_ip : "disabled"
 }
 
 output "instance_private_ip" {
@@ -39,12 +44,12 @@ output "retrieve_key_command" {
 
 output "admin_ssh_command" {
   description = "SSH command for admin access as the 'ubuntu' user."
-  value       = "ssh -i ${local.name_prefix}-key.pem ubuntu@${aws_instance.this.public_ip}"
+  value       = "ssh -i ${local.name_prefix}-key.pem ubuntu@${local.public_ip}"
 }
 
 output "sftp_connect_command" {
   description = "SFTP command to connect as the dedicated SFTP user."
-  value       = "sftp -i ${local.name_prefix}-key.pem ${var.sftp_username}@${aws_instance.this.public_ip}"
+  value       = "sftp -i ${local.name_prefix}-key.pem ${var.sftp_username}@${local.public_ip}"
 }
 
 ###############################################################################
@@ -53,7 +58,7 @@ output "sftp_connect_command" {
 
 output "web_dashboard_url" {
   description = "URL to open the browser-based file dashboard (login required)."
-  value       = var.enable_web_dashboard ? "http://${aws_instance.this.public_ip}:${var.web_dashboard_port}" : "disabled"
+  value       = var.enable_web_dashboard ? "http://${local.public_ip}:${var.web_dashboard_port}" : "disabled"
 }
 
 output "web_dashboard_username" {
@@ -106,7 +111,7 @@ output "vsftp_secret_name" {
 
 output "vsftp_connect_command" {
   description = "SFTP command for the external user (password auth — no key needed)."
-  value       = "sftp ${var.vsftp_username}@${aws_instance.this.public_ip}"
+  value       = "sftp ${var.vsftp_username}@${local.public_ip}"
 }
 
 output "retrieve_vsftp_credentials_command" {

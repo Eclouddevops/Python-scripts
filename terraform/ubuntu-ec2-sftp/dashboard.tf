@@ -39,6 +39,6 @@ resource "aws_secretsmanager_secret_version" "dashboard" {
     username = var.web_dashboard_admin_user
     password = local.dashboard_admin_password
     port     = var.web_dashboard_port
-    url      = "http://${aws_instance.this.public_ip}:${var.web_dashboard_port}"
+    url      = "http://${local.public_ip}:${var.web_dashboard_port}"
   })
 }

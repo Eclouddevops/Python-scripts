@@ -12,6 +12,9 @@ project_name  = "ubuntu-base"
 environment   = "prod"
 instance_type = "t3.micro"
 
+# Fixed public IP that survives restarts / instance replacement (recommended for FTP).
+enable_elastic_ip = true
+
 # IMPORTANT: lock this down to your office/VPN IP in production, e.g. ["203.0.113.10/32"]
 allowed_ssh_cidrs = ["0.0.0.0/0"]
 
