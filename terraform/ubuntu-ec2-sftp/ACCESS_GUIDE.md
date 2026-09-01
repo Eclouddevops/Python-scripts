@@ -172,6 +172,19 @@ sftp> bye
 > Give external parties **only** the `vsftpuser` credentials from the secret —
 > never the SSH key or the `ubuntu` admin access.
 
+### Same credentials in the browser dashboard
+
+The **same** `vsftpuser` username + password also log into the [web dashboard](#4-web-dashboard--browser-login).
+In the browser the user is **scoped to only their own `files/` folder** (they
+can't see other users' data). So external users get **one** login that works for
+both SFTP and the browser:
+
+- **SFTP:** `sftp vsftpuser@<PUBLIC_IP>` → `cd files`
+- **Browser:** open the dashboard URL → log in as `vsftpuser`
+
+> `admin` still logs into the dashboard with full access to all files; the
+> `admin` password is in the separate `.../dashboard/credentials` secret.
+
 ---
 
 ## 3. SFTP — GUI client (WinSCP / FileZilla)
@@ -230,8 +243,15 @@ The secret returns JSON like:
 
 ### Log in
 
+Two logins are available on the dashboard:
+
+| Login | Sees | Password source |
+|-------|------|-----------------|
+| `admin` | **All** files on the volume | `.../dashboard/credentials` secret |
+| `vsftpuser` | **Only** its own `files/` folder | `.../ftp/vsftpuser-credentials` secret |
+
 1. Open the `url` in your browser (e.g. `http://13.127.46.86:8080`).
-2. Enter the `username` and `password` from the secret.
+2. Log in as **`admin`** (full access) or **`vsftpuser`** (external user, scoped).
 3. Upload / download / preview files via the web UI.
 
 > The dashboard may take **1–2 minutes** after `terraform apply` to come online
@@ -247,7 +267,8 @@ The secret returns JSON like:
 | SFTP (key) | `sftpuser` + key | 22 | Internal / automated transfer |
 | **External FTP** | **`vsftpuser` + password** | 22 | **External users (give them this only)** |
 | SFTP (GUI) | `sftpuser` key **or** `vsftpuser` password | 22 | Drag-and-drop file transfer |
-| Web dashboard | `admin` + password | 8080 | Browser access, no client install |
+| Web dashboard (admin) | `admin` + password | 8080 | Browser access to all files |
+| Web dashboard (external) | `vsftpuser` + password | 8080 | Browser access scoped to `files/` |
 
 All file storage lives on the dedicated **100 GiB** volume at `/srv/ftp`.
 

@@ -186,8 +186,18 @@ if [ "${enable_web_dashboard}" = "true" ]; then
   filebrowser -d "$FB_DB" config init
   filebrowser -d "$FB_DB" config set --address 0.0.0.0 --port "$DASHBOARD_PORT" --root "$DATA_DIR"
 
+  # --- Admin user: full access to the whole FTP volume ---
   if ! filebrowser -d "$FB_DB" users add "$DASHBOARD_USER" "$DASHBOARD_PASS" --perm.admin 2>/dev/null; then
     filebrowser -d "$FB_DB" users update "$DASHBOARD_USER" --password "$DASHBOARD_PASS" --perm.admin
+  fi
+
+  # --- External user (vsftpuser): SAME credentials as SFTP, but scoped in the
+  #     browser to ONLY their own files/ folder. Lets external users log in via
+  #     both SFTP and the web dashboard with one set of credentials. ---
+  VSFTP_SCOPE="$FTP_MOUNT/$VSFTP_USER/$VSFTP_UPLOAD_DIR"
+  mkdir -p "$VSFTP_SCOPE"
+  if ! filebrowser -d "$FB_DB" users add "$VSFTP_USER" "$VSFTP_PASS" --scope "$VSFTP_SCOPE" --perm.admin=false 2>/dev/null; then
+    filebrowser -d "$FB_DB" users update "$VSFTP_USER" --password "$VSFTP_PASS" --scope "$VSFTP_SCOPE" --perm.admin=false
   fi
 
   cat > /etc/systemd/system/filebrowser.service <<EOF
