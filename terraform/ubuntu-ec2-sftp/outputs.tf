@@ -70,3 +70,46 @@ output "retrieve_dashboard_credentials_command" {
   description = "Command to fetch the dashboard username/password from Secrets Manager."
   value       = var.enable_web_dashboard ? "aws secretsmanager get-secret-value --secret-id ${aws_secretsmanager_secret.dashboard[0].name} --region ${var.aws_region} --query SecretString --output text" : "disabled"
 }
+
+###############################################################################
+# FTP data volume outputs
+###############################################################################
+
+output "ftp_data_volume_id" {
+  description = "ID of the dedicated EBS volume used for FTP storage."
+  value       = aws_ebs_volume.ftp_data.id
+}
+
+output "ftp_data_volume_size_gb" {
+  description = "Size of the dedicated FTP data volume (GiB)."
+  value       = aws_ebs_volume.ftp_data.size
+}
+
+output "ftp_data_mount_point" {
+  description = "Where the FTP data volume is mounted on the instance."
+  value       = var.ftp_data_mount_point
+}
+
+###############################################################################
+# External FTP user (vsftpuser) outputs
+###############################################################################
+
+output "vsftp_username" {
+  description = "Username of the external, password-authenticated FTP user."
+  value       = var.vsftp_username
+}
+
+output "vsftp_secret_name" {
+  description = "Secrets Manager secret holding the external FTP user's credentials."
+  value       = aws_secretsmanager_secret.vsftp.name
+}
+
+output "vsftp_connect_command" {
+  description = "SFTP command for the external user (password auth — no key needed)."
+  value       = "sftp ${var.vsftp_username}@${aws_instance.this.public_ip}"
+}
+
+output "retrieve_vsftp_credentials_command" {
+  description = "Command to fetch the external FTP user's username/password from Secrets Manager."
+  value       = "aws secretsmanager get-secret-value --secret-id ${aws_secretsmanager_secret.vsftp.name} --region ${var.aws_region} --query SecretString --output text"
+}
