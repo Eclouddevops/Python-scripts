@@ -1,0 +1,14 @@
+# Example variable overrides — copy to terraform.tfvars and edit as needed.
+
+aws_region      = "ap-south-1"
+assume_role_arn = "arn:aws:iam::986788162487:role/OrganizationAccountAccessRole"
+
+project_name  = "ubuntu-base"
+environment   = "prod"
+instance_type = "t3.micro"
+
+# IMPORTANT: lock this down to your office/VPN IP in production, e.g. ["203.0.113.10/32"]
+allowed_ssh_cidrs = ["0.0.0.0/0"]
+
+sftp_username   = "sftpuser"
+sftp_upload_dir = "upload"
