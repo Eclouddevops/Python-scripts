@@ -11,9 +11,13 @@ resource "aws_instance" "this" {
   associate_public_ip_address = var.associate_public_ip
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
-    sftp_user  = var.sftp_username
-    upload_dir = var.sftp_upload_dir
-    public_key = trimspace(tls_private_key.ssh.public_key_openssh)
+    sftp_user              = var.sftp_username
+    upload_dir             = var.sftp_upload_dir
+    public_key             = trimspace(tls_private_key.ssh.public_key_openssh)
+    enable_web_dashboard   = var.enable_web_dashboard ? "true" : "false"
+    web_dashboard_port     = var.web_dashboard_port
+    web_dashboard_user     = var.web_dashboard_admin_user
+    web_dashboard_password = local.dashboard_admin_password
   })
 
   # Re-run user_data if the SFTP configuration changes.

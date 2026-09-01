@@ -2,8 +2,9 @@
 
 Terraform configuration that provisions a hardened **Ubuntu 22.04 LTS** EC2
 instance in the **CoreProdWorkloadAccount** (`986788162487`) in the
-**Mumbai (`ap-south-1`)** region, with a **chroot-jailed SFTP** service and the
-SSH private key stored securely in **AWS Secrets Manager**.
+**Mumbai (`ap-south-1`)** region, with a **chroot-jailed SFTP** service, a
+**browser-based file dashboard** ([File Browser](https://filebrowser.org/)) with
+a login page, and the SSH private key stored securely in **AWS Secrets Manager**.
 
 ## What it creates
 
@@ -11,15 +12,18 @@ SSH private key stored securely in **AWS Secrets Manager**.
 |----------|---------|
 | `tls_private_key` | Generates a fresh RSA 4096-bit SSH key pair |
 | `aws_key_pair` | Registers the public key with EC2 |
-| `aws_secretsmanager_secret` (+ version) | Stores the private key + connection metadata securely |
-| `aws_security_group` | Allows SSH/SFTP on port 22 |
+| `aws_secretsmanager_secret` (+ version) | Stores the SSH private key + connection metadata securely |
+| `aws_secretsmanager_secret` (dashboard) | Stores the web dashboard login (auto-generated password) |
+| `random_password` | Generates a strong dashboard admin password |
+| `aws_security_group` | Allows SSH/SFTP on port 22 (+ dashboard port when enabled) |
 | `aws_instance` | Ubuntu 22.04 LTS instance (IMDSv2, encrypted gp3 root volume) |
-| cloud-init `user_data` | Creates a chrooted, key-only SFTP user |
+| cloud-init `user_data` | Creates a chrooted SFTP user AND installs the File Browser dashboard |
 
 ## Key design points
 
 - **No key on disk** — the private key is generated in-memory and written only to Secrets Manager.
 - **Secure SFTP** — a dedicated `sftpuser` is chroot-jailed to its home directory, has no shell (`/usr/sbin/nologin`), key-only auth, and a writable `upload/` subdirectory. This follows the standard OpenSSH `ChrootDirectory` + `internal-sftp` pattern.
+- **Browser dashboard** — [File Browser](https://filebrowser.org/) runs as a systemd service on port `8080` (configurable), points at the **same** `upload/` directory as SFTP, and requires a login. Files uploaded via SFTP appear in the dashboard and vice-versa.
 - **IMDSv2 enforced** and **root volume encrypted**.
 
 ## Prerequisites
@@ -78,6 +82,35 @@ sftp> cd upload
 sftp> put localfile.txt
 ```
 
+## Access files from your browser (Web Dashboard)
+
+The [File Browser](https://filebrowser.org/) dashboard gives you a login page and
+a full file manager (upload, download, drag-and-drop, preview) in the browser —
+no SSH client needed. It manages the same `upload/` directory as SFTP.
+
+1. Get the URL and login credentials (printed as Terraform outputs):
+
+   ```bash
+   terraform output web_dashboard_url
+   # Fetch the auto-generated admin password from Secrets Manager
+   aws secretsmanager get-secret-value \
+     --secret-id ubuntu-base-prod/dashboard/credentials \
+     --region ap-south-1 \
+     --query SecretString --output text
+   ```
+
+2. Open the URL in your browser (e.g. `http://<PUBLIC_IP>:8080`) and log in with
+   the `username` / `password` from the secret above.
+
+> The dashboard may take ~1–2 minutes after `apply` to come online while
+> cloud-init installs and starts the service.
+
+**Disable it** by setting `enable_web_dashboard = false` (SFTP still works).
+
+> 📖 **See [ACCESS_GUIDE.md](./ACCESS_GUIDE.md)** for a complete, step-by-step
+> guide to all access methods (SSH, SFTP CLI/GUI, and the web dashboard login),
+> including credential retrieval and troubleshooting.
+
 ## Variables
 
 | Variable | Default | Description |
@@ -92,6 +125,11 @@ sftp> put localfile.txt
 | `allowed_ssh_cidrs` | `["0.0.0.0/0"]` | **Restrict this in production** |
 | `sftp_username` | `sftpuser` | Dedicated SFTP account |
 | `sftp_upload_dir` | `upload` | Writable dir inside chroot |
+| `enable_web_dashboard` | `true` | Install the File Browser web dashboard |
+| `web_dashboard_port` | `8080` | Port the dashboard listens on |
+| `web_dashboard_admin_user` | `admin` | Dashboard login username |
+| `web_dashboard_admin_password` | `""` (auto-gen) | Dashboard password; empty = strong random, stored in Secrets Manager |
+| `allowed_web_cidrs` | `["0.0.0.0/0"]` | CIDRs allowed to reach the dashboard — **restrict in production** |
 
 ## Cleanup
 

@@ -46,3 +46,27 @@ output "sftp_connect_command" {
   description = "SFTP command to connect as the dedicated SFTP user."
   value       = "sftp -i ${local.name_prefix}-key.pem ${var.sftp_username}@${aws_instance.this.public_ip}"
 }
+
+###############################################################################
+# Web Dashboard outputs (only meaningful when enable_web_dashboard = true)
+###############################################################################
+
+output "web_dashboard_url" {
+  description = "URL to open the browser-based file dashboard (login required)."
+  value       = var.enable_web_dashboard ? "http://${aws_instance.this.public_ip}:${var.web_dashboard_port}" : "disabled"
+}
+
+output "web_dashboard_username" {
+  description = "Admin username for the web dashboard login."
+  value       = var.enable_web_dashboard ? var.web_dashboard_admin_user : "disabled"
+}
+
+output "web_dashboard_secret_name" {
+  description = "Secrets Manager secret holding the dashboard login credentials."
+  value       = var.enable_web_dashboard ? aws_secretsmanager_secret.dashboard[0].name : "disabled"
+}
+
+output "retrieve_dashboard_credentials_command" {
+  description = "Command to fetch the dashboard username/password from Secrets Manager."
+  value       = var.enable_web_dashboard ? "aws secretsmanager get-secret-value --secret-id ${aws_secretsmanager_secret.dashboard[0].name} --region ${var.aws_region} --query SecretString --output text" : "disabled"
+}

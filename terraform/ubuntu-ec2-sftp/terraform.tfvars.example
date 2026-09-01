@@ -17,3 +17,12 @@ allowed_ssh_cidrs = ["0.0.0.0/0"]
 
 sftp_username   = "sftpuser"
 sftp_upload_dir = "upload"
+
+# --- Web dashboard (browser-based file access via File Browser) ---
+enable_web_dashboard     = true
+web_dashboard_port       = 8080
+web_dashboard_admin_user = "admin"
+# Leave empty to auto-generate a strong password (stored in Secrets Manager).
+web_dashboard_admin_password = ""
+# IMPORTANT: restrict this to your IP in production, e.g. ["203.0.113.10/32"]
+allowed_web_cidrs = ["0.0.0.0/0"]

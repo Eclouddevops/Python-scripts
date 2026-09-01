@@ -87,6 +87,44 @@ variable "sftp_upload_dir" {
   default     = "upload"
 }
 
+###############################################################################
+# Web Dashboard (browser-based SFTP access via File Browser)
+###############################################################################
+
+variable "enable_web_dashboard" {
+  description = "Whether to install the File Browser web dashboard for browser-based file access."
+  type        = bool
+  default     = true
+}
+
+variable "web_dashboard_port" {
+  description = "TCP port the web dashboard listens on."
+  type        = number
+  default     = 8080
+}
+
+variable "web_dashboard_admin_user" {
+  description = "Admin username for the web dashboard login."
+  type        = string
+  default     = "admin"
+}
+
+variable "web_dashboard_admin_password" {
+  description = <<-EOT
+    Admin password for the web dashboard login. Leave empty to auto-generate a
+    strong random password (recommended) — it will be stored in Secrets Manager.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "allowed_web_cidrs" {
+  description = "List of CIDR blocks allowed to reach the web dashboard port. Restrict this in production."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 variable "common_tags" {
   description = "Common tags applied to all resources."
   type        = map(string)

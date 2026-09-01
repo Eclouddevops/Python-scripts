@@ -95,3 +95,61 @@ sshd -t
 systemctl restart ssh || systemctl restart sshd
 
 echo "SFTP setup complete for user '$SFTP_USER' (chroot: $SFTP_HOME, upload dir: $UPLOAD_DIR)"
+
+# ---------------------------------------------------------------------------
+# 7. (Optional) Web Dashboard — File Browser
+#    Provides browser-based file access with a login page, pointed at the
+#    SAME upload directory used by SFTP so files are shared between both.
+# ---------------------------------------------------------------------------
+if [ "${enable_web_dashboard}" = "true" ]; then
+  echo "Installing File Browser web dashboard..."
+
+  DASHBOARD_PORT="${web_dashboard_port}"
+  DASHBOARD_USER="${web_dashboard_user}"
+  DASHBOARD_PASS='${web_dashboard_password}'
+  DATA_DIR="$SFTP_HOME/$UPLOAD_DIR"
+  FB_CONFIG_DIR="/etc/filebrowser"
+  FB_DB="$FB_CONFIG_DIR/filebrowser.db"
+
+  # Install curl if missing, then install the File Browser binary.
+  apt-get install -y curl
+  curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+
+  mkdir -p "$FB_CONFIG_DIR"
+
+  # Initialise the database, root directory, and listen settings.
+  filebrowser -d "$FB_DB" config init
+  filebrowser -d "$FB_DB" config set --address 0.0.0.0 --port "$DASHBOARD_PORT" --root "$DATA_DIR"
+
+  # Create the admin user (idempotent: update password if it already exists).
+  if ! filebrowser -d "$FB_DB" users add "$DASHBOARD_USER" "$DASHBOARD_PASS" --perm.admin 2>/dev/null; then
+    filebrowser -d "$FB_DB" users update "$DASHBOARD_USER" --password "$DASHBOARD_PASS" --perm.admin
+  fi
+
+  # Ensure the data directory exists and is writable by the service (root here).
+  mkdir -p "$DATA_DIR"
+
+  # Create a systemd service so the dashboard starts on boot and restarts on failure.
+  cat > /etc/systemd/system/filebrowser.service <<EOF
+[Unit]
+Description=File Browser Web Dashboard
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/filebrowser -d $FB_DB
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable filebrowser
+  systemctl restart filebrowser
+
+  echo "File Browser dashboard running on port $DASHBOARD_PORT (root: $DATA_DIR)"
+fi
+
+echo "All setup complete."
