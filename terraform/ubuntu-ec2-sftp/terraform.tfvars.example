@@ -18,6 +18,17 @@ allowed_ssh_cidrs = ["0.0.0.0/0"]
 sftp_username   = "sftpuser"
 sftp_upload_dir = "upload"
 
+# --- Dedicated FTP storage volume (100 GiB by default) ---
+ftp_data_volume_size = 100
+ftp_data_volume_type = "gp3"
+ftp_data_mount_point = "/srv/ftp"
+
+# --- External password-based FTP user (give these creds to external users) ---
+vsftp_username   = "vsftpuser"
+vsftp_upload_dir = "files"
+# Leave empty to auto-generate a strong password (stored in Secrets Manager).
+vsftp_password = ""
+
 # --- Web dashboard (browser-based file access via File Browser) ---
 enable_web_dashboard     = true
 web_dashboard_port       = 8080

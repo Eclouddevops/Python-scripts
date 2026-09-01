@@ -3,10 +3,14 @@
 This guide explains **every way to access** the Ubuntu EC2 instance provisioned
 by this Terraform module:
 
-1. [Admin SSH login](#1-admin-ssh-login-shell-access) — full shell
-2. [SFTP — command line](#2-sftp--command-line) — secure file transfer
-3. [SFTP — GUI client](#3-sftp--gui-client-winscp--filezilla) — WinSCP / FileZilla
-4. [Web dashboard](#4-web-dashboard--browser-login) — browser login, no client needed
+1. [Admin SSH login](#1-admin-ssh-login-shell-access) — full shell (key)
+2. [SFTP — key user (`sftpuser`)](#2-sftp--command-line) — secure file transfer with a key
+3. [External FTP user (`vsftpuser`)](#external-ftp-user-vsftpuser--password-login) — **password login, for external users**
+4. [SFTP — GUI client](#3-sftp--gui-client-winscp--filezilla) — WinSCP / FileZilla
+5. [Web dashboard](#4-web-dashboard--browser-login) — browser login, no client needed
+
+> **Storage:** all FTP/SFTP files live on a dedicated **100 GiB encrypted EBS
+> volume** mounted at `/srv/ftp` — separate from the OS disk.
 
 > All credentials are stored in **AWS Secrets Manager**. Nothing is committed to
 > the repo or written to disk by Terraform.
@@ -121,6 +125,50 @@ sftp> bye                # disconnect
 
 ---
 
+## External FTP user (`vsftpuser`) — password login
+
+This is the account to give **external users**. It authenticates with a
+**username + password** (no SSH key), and has full **upload and download**
+access inside its `files/` directory. All data is stored on the 100 GiB FTP
+volume (`/srv/ftp/vsftpuser/files`).
+
+### Get the credentials from Secrets Manager
+
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id ubuntu-sftp-prod/ftp/vsftpuser-credentials \
+  --region ap-south-1 \
+  --query SecretString --output text
+```
+
+Returns JSON like:
+```json
+{
+  "username": "vsftpuser",
+  "password": "••••••••••••••••••••••••",
+  "host": "13.127.46.86",
+  "port": 22,
+  "protocol": "SFTP",
+  "upload_dir": "files"
+}
+```
+
+### Connect (what the external user runs)
+
+```bash
+sftp vsftpuser@<PUBLIC_IP>
+# ...enter the password when prompted...
+sftp> cd files
+sftp> put myfile.txt      # upload
+sftp> get result.csv      # download
+sftp> bye
+```
+
+> Give external parties **only** the `vsftpuser` credentials from the secret —
+> never the SSH key or the `ubuntu` admin access.
+
+---
+
 ## 3. SFTP — GUI client (WinSCP / FileZilla)
 
 ### WinSCP (Windows)
@@ -138,9 +186,11 @@ sftp> bye                # disconnect
 
 - Protocol: **SFTP - SSH File Transfer Protocol**
 - Host: `<PUBLIC_IP>`, Port: `22`
-- Logon Type: **Key file**
-- User: `sftpuser`
-- Key file: `key.pem`
+- **For `sftpuser` (key):** Logon Type **Key file** → select `key.pem`
+- **For `vsftpuser` (external):** Logon Type **Normal**, User `vsftpuser`, Password from the secret
+
+> External users can simply use FileZilla/WinSCP with **User = `vsftpuser`** and
+> the **password** from Secrets Manager — no key file needed.
 
 ---
 
@@ -189,9 +239,12 @@ The secret returns JSON like:
 | Method | User / Login | Port | Best for |
 |--------|--------------|------|----------|
 | SSH | `ubuntu` + key | 22 | Server admin (full shell, `sudo`) |
-| SFTP (CLI) | `sftpuser` + key | 22 | Scripted / quick file transfer |
-| SFTP (GUI) | `sftpuser` + key | 22 | Drag-and-drop file transfer |
+| SFTP (key) | `sftpuser` + key | 22 | Internal / automated transfer |
+| **External FTP** | **`vsftpuser` + password** | 22 | **External users (give them this only)** |
+| SFTP (GUI) | `sftpuser` key **or** `vsftpuser` password | 22 | Drag-and-drop file transfer |
 | Web dashboard | `admin` + password | 8080 | Browser access, no client install |
+
+All file storage lives on the dedicated **100 GiB** volume at `/srv/ftp`.
 
 ---
 

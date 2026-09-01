@@ -88,6 +88,55 @@ variable "sftp_upload_dir" {
 }
 
 ###############################################################################
+# FTP Data Volume (dedicated EBS volume for FTP/SFTP storage)
+###############################################################################
+
+variable "ftp_data_volume_size" {
+  description = "Size (GiB) of the dedicated EBS data volume used for FTP/SFTP storage."
+  type        = number
+  default     = 100
+}
+
+variable "ftp_data_volume_type" {
+  description = "EBS volume type for the FTP data volume."
+  type        = string
+  default     = "gp3"
+}
+
+variable "ftp_data_mount_point" {
+  description = "Filesystem path where the FTP data volume is mounted on the instance."
+  type        = string
+  default     = "/srv/ftp"
+}
+
+###############################################################################
+# External FTP user (password-authenticated) — "vsftpuser"
+###############################################################################
+
+variable "vsftp_username" {
+  description = "Username for the external, password-authenticated FTP/SFTP account with upload + download access."
+  type        = string
+  default     = "vsftpuser"
+}
+
+variable "vsftp_password" {
+  description = <<-EOT
+    Password for the external FTP user. Leave empty to auto-generate a strong
+    random password (recommended) — it is stored in AWS Secrets Manager so
+    external users can be given the "vsftpuser" credentials only.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "vsftp_upload_dir" {
+  description = "Writable upload/download directory (on the FTP data volume) for the external vsftp user."
+  type        = string
+  default     = "files"
+}
+
+###############################################################################
 # Web Dashboard (browser-based SFTP access via File Browser)
 ###############################################################################
 

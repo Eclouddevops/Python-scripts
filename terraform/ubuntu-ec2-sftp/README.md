@@ -14,17 +14,23 @@ a login page, and the SSH private key stored securely in **AWS Secrets Manager**
 | `aws_key_pair` | Registers the public key with EC2 |
 | `aws_secretsmanager_secret` (+ version) | Stores the SSH private key + connection metadata securely |
 | `aws_secretsmanager_secret` (dashboard) | Stores the web dashboard login (auto-generated password) |
-| `random_password` | Generates a strong dashboard admin password |
+| `aws_secretsmanager_secret` (vsftpuser) | Stores the **external FTP user** credentials (username + password) |
+| `random_password` | Generates strong passwords (dashboard + vsftpuser) |
+| `aws_ebs_volume` (100 GiB) + attachment | **Dedicated encrypted FTP storage volume**, mounted at `/srv/ftp` |
 | `aws_security_group` | Allows SSH/SFTP on port 22 (+ dashboard port when enabled) |
 | `aws_instance` | Ubuntu 22.04 LTS instance (IMDSv2, encrypted gp3 root volume) |
-| cloud-init `user_data` | Creates a chrooted SFTP user AND installs the File Browser dashboard |
+| cloud-init `user_data` | Mounts the FTP volume, creates the SFTP users, installs the dashboard |
 
 ## Key design points
 
-- **No key on disk** — the private key is generated in-memory and written only to Secrets Manager.
-- **Secure SFTP** — a dedicated `sftpuser` is chroot-jailed to its home directory, has no shell (`/usr/sbin/nologin`), key-only auth, and a writable `upload/` subdirectory. This follows the standard OpenSSH `ChrootDirectory` + `internal-sftp` pattern.
-- **Browser dashboard** — [File Browser](https://filebrowser.org/) runs as a systemd service on port `8080` (configurable), points at the **same** `upload/` directory as SFTP, and requires a login. Files uploaded via SFTP appear in the dashboard and vice-versa.
-- **IMDSv2 enforced** and **root volume encrypted**.
+- **Dedicated 100 GiB FTP storage** — a separate encrypted EBS volume is mounted at `/srv/ftp`. All FTP/SFTP users and the dashboard store files here, so FTP space is not limited by the small root disk. The volume survives instance replacement and can be resized independently.
+- **Two SFTP users:**
+  - `sftpuser` — **key-based** (uses the generated SSH key), for internal/automated use.
+  - `vsftpuser` — **password-based**, for **external users**. Give them only these credentials (from Secrets Manager). Full upload + download inside their `files/` directory.
+- **Secure SFTP** — both users are chroot-jailed on the data volume, have no shell (`/usr/sbin/nologin`), using the standard OpenSSH `ChrootDirectory` + `internal-sftp` pattern. Password auth is enabled **only** for the SFTP group; admin SSH stays key-only.
+- **No key on disk** — the SSH private key is generated in-memory and written only to Secrets Manager.
+- **Browser dashboard** — [File Browser](https://filebrowser.org/) runs as a systemd service on port `8080` (configurable), rooted at `/srv/ftp` so admins see every user's files. Requires a login.
+- **IMDSv2 enforced** and **all volumes encrypted**.
 
 ## Prerequisites
 
@@ -111,6 +117,28 @@ no SSH client needed. It manages the same `upload/` directory as SFTP.
 > guide to all access methods (SSH, SFTP CLI/GUI, and the web dashboard login),
 > including credential retrieval and troubleshooting.
 
+## External FTP user (`vsftpuser`)
+
+External users connect with a **username + password** (no SSH key needed). The
+credentials are auto-generated and stored in Secrets Manager — hand these out to
+external parties and nothing else.
+
+```bash
+# Fetch the external FTP user's username + password
+aws secretsmanager get-secret-value \
+  --secret-id ubuntu-base-prod/ftp/vsftpuser-credentials \
+  --region ap-south-1 \
+  --query SecretString --output text
+
+# The external user then connects (they'll be prompted for the password):
+sftp vsftpuser@<PUBLIC_IP>
+sftp> cd files          # writable upload/download directory
+sftp> put report.pdf    # upload
+sftp> get data.csv      # download
+```
+
+Files land on the dedicated **100 GiB** volume at `/srv/ftp/vsftpuser/files`.
+
 ## Variables
 
 | Variable | Default | Description |
@@ -123,8 +151,14 @@ no SSH client needed. It manages the same `upload/` directory as SFTP.
 | `instance_type` | `t3.micro` | EC2 instance type |
 | `root_volume_size` | `20` | Root EBS size (GiB) |
 | `allowed_ssh_cidrs` | `["0.0.0.0/0"]` | **Restrict this in production** |
-| `sftp_username` | `sftpuser` | Dedicated SFTP account |
+| `sftp_username` | `sftpuser` | Key-based SFTP account |
 | `sftp_upload_dir` | `upload` | Writable dir inside chroot |
+| `ftp_data_volume_size` | `100` | Size (GiB) of the dedicated FTP storage volume |
+| `ftp_data_volume_type` | `gp3` | EBS type for the FTP volume |
+| `ftp_data_mount_point` | `/srv/ftp` | Where the FTP volume is mounted |
+| `vsftp_username` | `vsftpuser` | External password-based FTP user |
+| `vsftp_password` | `""` (auto-gen) | Empty = strong random, stored in Secrets Manager |
+| `vsftp_upload_dir` | `files` | Writable upload/download dir for the external user |
 | `enable_web_dashboard` | `true` | Install the File Browser web dashboard |
 | `web_dashboard_port` | `8080` | Port the dashboard listens on |
 | `web_dashboard_admin_user` | `admin` | Dashboard login username |
