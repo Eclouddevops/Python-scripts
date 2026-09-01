@@ -141,6 +141,11 @@ sftp> get data.csv      # download
 
 Files land on the dedicated **100 GiB** volume at `/srv/ftp/vsftpuser/files`.
 
+> **One login for both:** the same `vsftpuser` credentials also work in the
+> **web dashboard** — external users can log in at the dashboard URL and are
+> scoped to only their `files/` folder. So you share a single username/password
+> and they can use SFTP *or* the browser.
+
 ## Variables
 
 | Variable | Default | Description |
