@@ -107,6 +107,10 @@ no SSH client needed. It manages the same `upload/` directory as SFTP.
 
 **Disable it** by setting `enable_web_dashboard = false` (SFTP still works).
 
+> 📖 **See [ACCESS_GUIDE.md](./ACCESS_GUIDE.md)** for a complete, step-by-step
+> guide to all access methods (SSH, SFTP CLI/GUI, and the web dashboard login),
+> including credential retrieval and troubleshooting.
+
 ## Variables
 
 | Variable | Default | Description |
