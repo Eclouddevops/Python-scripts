@@ -45,3 +45,8 @@ allowed_web_cidrs = ["0.0.0.0/0"]
 enable_web_hosting = true
 web_hosting_subdir = "testwebsite"   # sub-folder of /srv/ftp/data to serve; "" = whole folder
 web_hosting_port   = 80
+
+# --- Cloudflare (HTTPS handled by Cloudflare; origin stays HTTP:80) ---
+# When true, port 80 is restricted to Cloudflare IP ranges (no direct-IP access)
+# and nginx logs the real visitor IP via CF-Connecting-IP.
+use_cloudflare = true

@@ -29,6 +29,8 @@ resource "aws_instance" "this" {
     enable_web_hosting     = var.enable_web_hosting ? "true" : "false"
     web_hosting_subdir     = var.web_hosting_subdir
     web_hosting_port       = var.web_hosting_port
+    use_cloudflare         = var.use_cloudflare ? "true" : "false"
+    cloudflare_ipv4_cidrs  = join(" ", var.cloudflare_ipv4_cidrs)
   })
 
   # IN-PLACE UPDATES:

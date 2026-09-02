@@ -30,14 +30,16 @@ resource "aws_security_group" "this" {
   }
 
   # Web hosting (nginx HTTP) — only added when enabled.
+  # When use_cloudflare is true, restrict to Cloudflare's IP ranges so the
+  # origin can only be reached through Cloudflare (not by direct IP).
   dynamic "ingress" {
     for_each = var.enable_web_hosting ? [1] : []
     content {
-      description = "HTTP website hosting (nginx)"
+      description = var.use_cloudflare ? "HTTP via Cloudflare only" : "HTTP website hosting (nginx)"
       from_port   = var.web_hosting_port
       to_port     = var.web_hosting_port
       protocol    = "tcp"
-      cidr_blocks = var.allowed_web_cidrs
+      cidr_blocks = var.use_cloudflare ? var.cloudflare_ipv4_cidrs : var.allowed_web_cidrs
     }
   }
 

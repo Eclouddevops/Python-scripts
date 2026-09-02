@@ -35,6 +35,8 @@ VENDOR_PASS='${vendor_password}'
 ENABLE_WEB_HOSTING="${enable_web_hosting}"
 WEB_HOSTING_SUBDIR="${web_hosting_subdir}"
 WEB_HOSTING_PORT="${web_hosting_port}"
+USE_CLOUDFLARE="${use_cloudflare}"
+CLOUDFLARE_IPV4_CIDRS="${cloudflare_ipv4_cidrs}"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -339,6 +341,21 @@ EOF
 
   ln -sfn /etc/nginx/sites-available/ftp-site /etc/nginx/sites-enabled/ftp-site
   rm -f /etc/nginx/sites-enabled/default
+
+  # When behind Cloudflare, tell nginx to trust Cloudflare's IPs and use the
+  # CF-Connecting-IP header so access logs show the REAL visitor IP.
+  if [ "$USE_CLOUDFLARE" = "true" ]; then
+    {
+      echo "# Cloudflare real-IP (managed by Terraform user_data)"
+      for cidr in $CLOUDFLARE_IPV4_CIDRS; do
+        echo "set_real_ip_from $cidr;"
+      done
+      echo "real_ip_header CF-Connecting-IP;"
+    } > /etc/nginx/conf.d/cloudflare-realip.conf
+    echo "Configured nginx real-IP for Cloudflare."
+  else
+    rm -f /etc/nginx/conf.d/cloudflare-realip.conf
+  fi
 
   nginx -t
   systemctl enable nginx
