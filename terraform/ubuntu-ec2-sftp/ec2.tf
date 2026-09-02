@@ -26,8 +26,13 @@ resource "aws_instance" "this" {
     web_dashboard_password = local.dashboard_admin_password
   })
 
-  # Re-run user_data if the SFTP configuration changes.
-  user_data_replace_on_change = true
+  # IN-PLACE UPDATES:
+  # Keep this FALSE so changing user_data does NOT destroy/recreate the running
+  # instance. The updated user_data is written to the instance, but cloud-init
+  # only runs user_data automatically on the FIRST boot. To (re)apply the new
+  # script on the existing instance, reboot it or run it once (see the
+  # user_data_rerun note in README).
+  user_data_replace_on_change = false
 
   root_block_device {
     volume_size           = var.root_volume_size
@@ -45,5 +50,10 @@ resource "aws_instance" "this" {
     Name = "${local.name_prefix}-ec2"
     OS   = "Ubuntu-22.04-LTS"
     SFTP = "enabled"
+  }
+
+  lifecycle {
+    # Do NOT replace the instance just because Canonical published a newer AMI.
+    ignore_changes = [ami]
   }
 }
