@@ -22,6 +22,11 @@ VSFTP_USER="${vsftp_user}"
 VSFTP_PASS='${vsftp_password}'
 VSFTP_UPLOAD_DIR="${vsftp_upload_dir}"
 
+# Vendor admin user (sudo) settings
+ENABLE_VENDOR="${enable_vendor_user}"
+VENDOR_USER="${vendor_user}"
+VENDOR_PASS='${vendor_password}'
+
 export DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
@@ -148,6 +153,38 @@ chown "$VSFTP_USER":"$SFTP_GROUP" "$VSFTP_HOME/$VSFTP_UPLOAD_DIR"
 chmod 755 "$VSFTP_HOME/$VSFTP_UPLOAD_DIR"
 
 # ---------------------------------------------------------------------------
+# 5b. Vendor admin user (sudo / root privileges) — real shell + password login
+#     NOTE: a sudo user needs a normal shell and must NOT be in the chrooted
+#     SFTP group, so it is created separately as a full admin account.
+# ---------------------------------------------------------------------------
+if [ "$ENABLE_VENDOR" = "true" ]; then
+  if ! id "$VENDOR_USER" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "$VENDOR_USER"
+  fi
+
+  # Set / update the password.
+  echo "$VENDOR_USER:$VENDOR_PASS" | chpasswd
+
+  # Grant full sudo (root) privileges.
+  usermod -aG sudo "$VENDOR_USER"
+
+  # Allow this specific user to use sudo without re-prompting is NOT enabled;
+  # standard sudo (password) is used. Enable passwordless sudo by uncommenting:
+  # echo "$VENDOR_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-$VENDOR_USER
+  # chmod 440 /etc/sudoers.d/90-$VENDOR_USER
+
+  # Also install the SSH public key so the vendor can log in with the key too.
+  VENDOR_HOME="/home/$VENDOR_USER"
+  mkdir -p "$VENDOR_HOME/.ssh"
+  echo "$PUBLIC_KEY" > "$VENDOR_HOME/.ssh/authorized_keys"
+  chown -R "$VENDOR_USER":"$VENDOR_USER" "$VENDOR_HOME/.ssh"
+  chmod 700 "$VENDOR_HOME/.ssh"
+  chmod 600 "$VENDOR_HOME/.ssh/authorized_keys"
+
+  echo "Vendor admin user '$VENDOR_USER' created with sudo privileges."
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Configure OpenSSH: internal-sftp + chroot for the group, and allow
 #    password auth ONLY for the SFTP group (admin SSH stays key-only).
 # ---------------------------------------------------------------------------
@@ -168,6 +205,18 @@ Match Group $SFTP_GROUP
     ForceCommand internal-sftp
     AllowTcpForwarding no
     X11Forwarding no
+    PasswordAuthentication yes
+    KbdInteractiveAuthentication yes
+EOF
+fi
+
+# Allow password login for the vendor admin user (full shell, sudo). This is a
+# targeted Match block so global password auth stays off for everyone else.
+if [ "$ENABLE_VENDOR" = "true" ] && ! grep -q "Match User $VENDOR_USER" "$SSHD_CONFIG"; then
+cat >> "$SSHD_CONFIG" <<EOF
+
+# ---- Vendor admin password login (managed by Terraform user_data) ----
+Match User $VENDOR_USER
     PasswordAuthentication yes
     KbdInteractiveAuthentication yes
 EOF
