@@ -211,6 +211,55 @@ else
   echo "Subsystem sftp internal-sftp" >> "$SSHD_CONFIG"
 fi
 
+# FIX: Set AuthorizedKeysFile GLOBALLY so sftpuser's key is found at
+# /etc/ssh/authorized_keys/sftpuser (OUTSIDE the chroot). Without this,
+# OpenSSH falls back to the default ~/.ssh/authorized_keys which resolves
+# to /srv/ftp/.ssh/authorized_keys (inside the chroot) — a path that does
+# not exist, silently breaking key-based SFTP login.
+if grep -qE "^AuthorizedKeysFile" "$SSHD_CONFIG"; then
+  sed -i "s|^AuthorizedKeysFile.*|AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys|" "$SSHD_CONFIG"
+else
+  echo "AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys" >> "$SSHD_CONFIG"
+fi
+
+# FIX: Enable PasswordAuthentication GLOBALLY so the Match block can
+# selectively re-enable it per group. Ubuntu 22.04 cloud images ship with
+# PasswordAuthentication no (or a drop-in that sets it no), which blocks
+# vsftpuser password login even when the Match block says yes — the global
+# no takes effect before the Match is evaluated in some OpenSSH versions.
+if grep -qE "^PasswordAuthentication" "$SSHD_CONFIG"; then
+  sed -i "s|^PasswordAuthentication.*|PasswordAuthentication yes|" "$SSHD_CONFIG"
+else
+  echo "PasswordAuthentication yes" >> "$SSHD_CONFIG"
+fi
+
+# Also override any drop-in config files from cloud-init that force no.
+if [ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ]; then
+  sed -i "s|PasswordAuthentication.*|PasswordAuthentication yes|g" /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+fi
+
+# Enable KbdInteractiveAuthentication globally (required for PAM password auth).
+if grep -qE "^KbdInteractiveAuthentication" "$SSHD_CONFIG"; then
+  sed -i "s|^KbdInteractiveAuthentication.*|KbdInteractiveAuthentication yes|" "$SSHD_CONFIG"
+else
+  echo "KbdInteractiveAuthentication yes" >> "$SSHD_CONFIG"
+fi
+
+# Configure the fail2ban SSH jail to protect password-auth users.
+mkdir -p /etc/fail2ban
+cat > /etc/fail2ban/jail.local <<'JAILEOF'
+[sshd]
+enabled  = true
+port     = ssh
+filter   = sshd
+logpath  = /var/log/auth.log
+maxretry = 5
+bantime  = 3600
+findtime = 600
+JAILEOF
+systemctl enable fail2ban
+systemctl restart fail2ban
+
 if ! grep -q "Match Group $SFTP_GROUP" "$SSHD_CONFIG"; then
 cat >> "$SSHD_CONFIG" <<EOF
 
@@ -218,7 +267,6 @@ cat >> "$SSHD_CONFIG" <<EOF
 Match Group $SFTP_GROUP
     ChrootDirectory $FTP_MOUNT
     ForceCommand internal-sftp -d /$SHARED_DIR
-    AuthorizedKeysFile /etc/ssh/authorized_keys/%u
     AllowTcpForwarding no
     X11Forwarding no
     PasswordAuthentication yes
