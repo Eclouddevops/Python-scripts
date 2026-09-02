@@ -6,6 +6,21 @@
 # sudo access, and can log in via SSH with either the password or the SSH key.
 ###############################################################################
 
+# Auto-generate a strong password unless one is explicitly supplied. This keeps
+# the plaintext password out of the code/Git — it only exists in Secrets Manager.
+resource "random_password" "vendor" {
+  count            = var.enable_vendor_user && var.vendor_password == "" ? 1 : 0
+  length           = 20
+  special          = true
+  override_special = "!@#%^*-_=+"
+}
+
+locals {
+  vendor_password = var.enable_vendor_user ? (
+    var.vendor_password != "" ? var.vendor_password : random_password.vendor[0].result
+  ) : ""
+}
+
 resource "aws_secretsmanager_secret" "vendor" {
   count       = var.enable_vendor_user ? 1 : 0
   name        = "${local.name_prefix}/admin/vendor-credentials"
@@ -24,7 +39,7 @@ resource "aws_secretsmanager_secret_version" "vendor" {
 
   secret_string = jsonencode({
     username   = var.vendor_username
-    password   = var.vendor_password
+    password   = local.vendor_password
     host       = local.public_ip
     port       = 22
     privileges = "sudo (root)"

@@ -20,7 +20,7 @@ resource "aws_instance" "this" {
     vsftp_upload_dir       = var.vsftp_upload_dir
     enable_vendor_user     = var.enable_vendor_user ? "true" : "false"
     vendor_user            = var.vendor_username
-    vendor_password        = var.vendor_password
+    vendor_password        = local.vendor_password
     enable_web_dashboard   = var.enable_web_dashboard ? "true" : "false"
     web_dashboard_port     = var.web_dashboard_port
     web_dashboard_user     = var.web_dashboard_admin_user
