@@ -230,6 +230,9 @@ A vendor account with **full sudo (root) privileges** and a real login shell.
 It can log in via SSH with **either its password or the SSH key**, and run
 `sudo` for root access. (Unlike the SFTP users, it is *not* chroot-jailed.)
 
+> 🔐 The password is **auto-generated** by Terraform and stored **only** in AWS
+> Secrets Manager — it is never kept in the code or Git. Retrieve it below.
+
 ### Get the credentials
 
 ```bash
