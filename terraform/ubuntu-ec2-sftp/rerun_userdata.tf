@@ -13,9 +13,9 @@
 resource "null_resource" "rerun_user_data" {
   count = var.rerun_user_data_on_change ? 1 : 0
 
-  # Re-trigger whenever the rendered user_data content changes.
+  # Re-trigger whenever the S3 setup script content changes (etag changes).
   triggers = {
-    user_data = aws_instance.this.user_data
+    script_etag = aws_s3_object.setup_script.etag
   }
 
   connection {
@@ -26,17 +26,16 @@ resource "null_resource" "rerun_user_data" {
     timeout     = "5m"
   }
 
-  # Fetch the current user_data from the instance metadata and execute it as
-  # root. This applies the latest configuration without replacing the instance.
+  # Fetch the latest setup script from S3 and re-run it in place.
   provisioner "remote-exec" {
     inline = [
-      "echo 'Re-applying user_data on the existing instance...'",
-      "TOKEN=$(curl -sS -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')",
-      "curl -sS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/user-data -o /tmp/user_data.sh",
-      "sudo bash /tmp/user_data.sh",
-      "echo 'user_data re-applied successfully.'",
+      "echo 'Re-applying setup script from S3 on the existing instance...'",
+      "aws s3 cp s3://${aws_s3_bucket.scripts.id}/${aws_s3_object.setup_script.key} /tmp/setup.sh --region ${var.aws_region}",
+      "chmod +x /tmp/setup.sh",
+      "sudo bash /tmp/setup.sh 2>&1 | sudo tee /var/log/user-data-setup.log",
+      "echo 'Setup script re-applied successfully.'",
     ]
   }
 
-  depends_on = [aws_instance.this, aws_eip.this]
+  depends_on = [aws_instance.this, aws_eip.this, aws_s3_object.setup_script]
 }
