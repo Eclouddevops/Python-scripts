@@ -10,7 +10,7 @@ assume_role_arn    = "arn:aws:iam::986788162487:role/OrganizationAccountAccessRo
 
 project_name  = "ubuntu-base"
 environment   = "prod"
-instance_type = "t3.micro"
+instance_type = "t3.large"
 
 # Fixed public IP that survives restarts / instance replacement (recommended for FTP).
 enable_elastic_ip = true

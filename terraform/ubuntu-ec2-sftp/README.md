@@ -155,7 +155,7 @@ Files land on the dedicated **100 GiB** volume at `/srv/ftp/vsftpuser/files`.
 | `assume_role_arn` | Org role ARN | Role to assume (only used when `enable_assume_role = true`) |
 | `project_name` | `ubuntu-base` | Resource name prefix |
 | `environment` | `prod` | Environment tag |
-| `instance_type` | `t3.micro` | EC2 instance type |
+| `instance_type` | `t3.large` | EC2 instance type (locked to t3.large) |
 | `root_volume_size` | `20` | Root EBS size (GiB) |
 | `enable_elastic_ip` | `true` | Allocate a fixed Elastic IP for the server |
 | `rerun_user_data_on_change` | `true` | Apply config changes in place over SSH (no instance replacement) |
