@@ -26,6 +26,9 @@ resource "aws_instance" "this" {
     web_dashboard_port     = var.web_dashboard_port
     web_dashboard_user     = var.web_dashboard_admin_user
     web_dashboard_password = local.dashboard_admin_password
+    enable_web_hosting     = var.enable_web_hosting ? "true" : "false"
+    web_hosting_subdir     = var.web_hosting_subdir
+    web_hosting_port       = var.web_hosting_port
   })
 
   # IN-PLACE UPDATES:
