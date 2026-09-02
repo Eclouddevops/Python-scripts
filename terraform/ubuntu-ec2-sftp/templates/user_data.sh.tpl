@@ -101,6 +101,29 @@ chown root:"$SFTP_GROUP" "$SHARED_PATH"
 chmod 2775 "$SHARED_PATH"      # setgid so new files inherit the group
 
 # ---------------------------------------------------------------------------
+# 3b. One-time migration of files from the OLD per-user layout into the new
+#     shared folder. Runs once (guarded by a marker file). Any content under
+#     the previous locations is moved into $SHARED_PATH so nothing is lost when
+#     switching from the deep path to the short /srv/ftp/$SHARED_DIR path.
+# ---------------------------------------------------------------------------
+MIGRATION_MARKER="$FTP_MOUNT/.shared-folder-migrated"
+if [ ! -f "$MIGRATION_MARKER" ]; then
+  for OLD in "$FTP_MOUNT/$VSFTP_USER/files" "$FTP_MOUNT/$SFTP_USER/upload"; do
+    if [ -d "$OLD" ] && [ -n "$(ls -A "$OLD" 2>/dev/null)" ]; then
+      echo "Migrating existing files from $OLD -> $SHARED_PATH"
+      # -n = don't overwrite files already present in the destination.
+      cp -a -n "$OLD"/. "$SHARED_PATH"/ 2>/dev/null || true
+    fi
+  done
+  # Normalise ownership/permissions on migrated content.
+  chown -R root:"$SFTP_GROUP" "$SHARED_PATH"
+  find "$SHARED_PATH" -type d -exec chmod 2775 {} \; 2>/dev/null || true
+  find "$SHARED_PATH" -type f -exec chmod 664 {} \; 2>/dev/null || true
+  touch "$MIGRATION_MARKER"
+  echo "Migration to shared folder complete."
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Key-based SFTP user (sftpuser) — chrooted to $FTP_MOUNT
 # ---------------------------------------------------------------------------
 if ! id "$SFTP_USER" >/dev/null 2>&1; then
