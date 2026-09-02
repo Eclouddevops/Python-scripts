@@ -122,6 +122,16 @@ output "website_root_path" {
   value       = var.enable_web_hosting ? "${var.ftp_data_mount_point}/${var.ftp_shared_dir}${var.web_hosting_subdir != "" ? "/${var.web_hosting_subdir}" : ""}" : "disabled"
 }
 
+output "scripts_bucket" {
+  description = "S3 bucket storing the rendered setup script (bypasses the 16 KB user_data limit)."
+  value       = aws_s3_bucket.scripts.id
+}
+
+output "setup_log_path" {
+  description = "Path on the server where the setup script output is logged."
+  value       = "/var/log/user-data-setup.log"
+}
+
 ###############################################################################
 # External FTP user (vsftpuser) outputs
 ###############################################################################
