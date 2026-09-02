@@ -40,9 +40,14 @@ variable "environment" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type."
+  description = "EC2 instance type. Locked to t3.large for this deployment."
   type        = string
-  default     = "t3.micro"
+  default     = "t3.large"
+
+  validation {
+    condition     = var.instance_type == "t3.large"
+    error_message = "instance_type must be t3.large."
+  }
 }
 
 variable "root_volume_size" {
