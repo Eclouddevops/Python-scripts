@@ -20,3 +20,17 @@ resource "aws_key_pair" "this" {
     Name = "${local.name_prefix}-keypair"
   }
 }
+
+###############################################################################
+# Stable SSH HOST key
+#
+# Generated once by Terraform and injected into the instance via user_data, so
+# the server presents the SAME host key even after a rebuild/resize. This stops
+# the "REMOTE HOST IDENTIFICATION HAS CHANGED" warning from appearing when the
+# instance is recreated. Kept in Terraform state (and can be stored in Secrets
+# Manager if desired). ED25519 is used (modern, matches OpenSSH defaults).
+###############################################################################
+
+resource "tls_private_key" "host" {
+  algorithm = "ED25519"
+}

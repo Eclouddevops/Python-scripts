@@ -16,6 +16,10 @@ SFTP_USER="${sftp_user}"
 SFTP_GROUP="sftpusers"
 PUBLIC_KEY="${public_key}"
 
+# Stable SSH host key (so the server keeps the same fingerprint across rebuilds)
+HOST_KEY_PRIVATE='${host_key_private}'
+HOST_KEY_PUBLIC='${host_key_public}'
+
 # FTP data volume + external user settings
 FTP_MOUNT="${ftp_data_mount_point}"
 SHARED_DIR="${shared_dir}"                 # single shared folder name, e.g. "data"
@@ -35,6 +39,17 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
 apt-get install -y openssh-server curl fail2ban ec2-instance-connect
+
+# ---------------------------------------------------------------------------
+# 1b. Install the STABLE SSH host key (generated once by Terraform).
+#     This makes the server present the same fingerprint after any rebuild,
+#     so clients don't hit "REMOTE HOST IDENTIFICATION HAS CHANGED".
+# ---------------------------------------------------------------------------
+printf '%s\n' "$HOST_KEY_PRIVATE" > /etc/ssh/ssh_host_ed25519_key
+printf '%s\n' "$HOST_KEY_PUBLIC"  > /etc/ssh/ssh_host_ed25519_key.pub
+chmod 600 /etc/ssh/ssh_host_ed25519_key
+chmod 644 /etc/ssh/ssh_host_ed25519_key.pub
+chown root:root /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub
 
 # ---------------------------------------------------------------------------
 # 2. Prepare & mount the dedicated EBS data volume for FTP storage

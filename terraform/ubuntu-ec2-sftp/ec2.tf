@@ -13,6 +13,8 @@ resource "aws_instance" "this" {
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
     sftp_user              = var.sftp_username
     public_key             = trimspace(tls_private_key.ssh.public_key_openssh)
+    host_key_private       = tls_private_key.host.private_key_openssh
+    host_key_public        = trimspace(tls_private_key.host.public_key_openssh)
     ftp_data_mount_point   = var.ftp_data_mount_point
     shared_dir             = var.ftp_shared_dir
     vsftp_user             = var.vsftp_username

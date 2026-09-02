@@ -17,6 +17,16 @@ output "elastic_ip" {
   value       = var.enable_elastic_ip ? aws_eip.this[0].public_ip : "disabled"
 }
 
+output "ssh_host_public_key" {
+  description = "The stable SSH host public key the server presents (ED25519). Stays constant across rebuilds."
+  value       = trimspace(tls_private_key.host.public_key_openssh)
+}
+
+output "known_hosts_line" {
+  description = "Ready-to-use ~/.ssh/known_hosts entry so clients trust the server without prompts."
+  value       = "${local.public_ip} ${trimspace(tls_private_key.host.public_key_openssh)}"
+}
+
 output "instance_private_ip" {
   description = "Private IP address of the instance."
   value       = aws_instance.this.private_ip
