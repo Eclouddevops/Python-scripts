@@ -147,6 +147,33 @@ variable "vsftp_upload_dir" {
 }
 
 ###############################################################################
+# Vendor admin user (sudo/root privileges, password + SSH login)
+###############################################################################
+
+variable "enable_vendor_user" {
+  description = "Whether to create a sudo-privileged vendor user with password login."
+  type        = bool
+  default     = true
+}
+
+variable "vendor_username" {
+  description = "Username for the sudo-privileged vendor account (full shell + sudo)."
+  type        = string
+  default     = "sftpvendor"
+}
+
+variable "vendor_password" {
+  description = <<-EOT
+    Password for the vendor admin user. This account has sudo (root) privileges
+    and a real login shell. Credentials are also stored in AWS Secrets Manager.
+    Prefer overriding this via a tfvars file / TF_VAR rather than committing it.
+  EOT
+  type        = string
+  default     = "sftpvendor@708"
+  sensitive   = true
+}
+
+###############################################################################
 # Web Dashboard (browser-based SFTP access via File Browser)
 ###############################################################################
 

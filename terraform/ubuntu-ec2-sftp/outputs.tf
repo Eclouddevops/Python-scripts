@@ -118,3 +118,27 @@ output "retrieve_vsftp_credentials_command" {
   description = "Command to fetch the external FTP user's username/password from Secrets Manager."
   value       = "aws secretsmanager get-secret-value --secret-id ${aws_secretsmanager_secret.vsftp.name} --region ${var.aws_region} --query SecretString --output text"
 }
+
+###############################################################################
+# Vendor admin user (sudo) outputs
+###############################################################################
+
+output "vendor_username" {
+  description = "Username of the sudo-privileged vendor admin account."
+  value       = var.enable_vendor_user ? var.vendor_username : "disabled"
+}
+
+output "vendor_ssh_command" {
+  description = "SSH command for the vendor admin user (password or key)."
+  value       = var.enable_vendor_user ? "ssh ${var.vendor_username}@${local.public_ip}" : "disabled"
+}
+
+output "vendor_secret_name" {
+  description = "Secrets Manager secret holding the vendor admin credentials."
+  value       = var.enable_vendor_user ? aws_secretsmanager_secret.vendor[0].name : "disabled"
+}
+
+output "retrieve_vendor_credentials_command" {
+  description = "Command to fetch the vendor admin username/password from Secrets Manager."
+  value       = var.enable_vendor_user ? "aws secretsmanager get-secret-value --secret-id ${aws_secretsmanager_secret.vendor[0].name} --region ${var.aws_region} --query SecretString --output text" : "disabled"
+}

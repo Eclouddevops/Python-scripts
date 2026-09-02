@@ -12,6 +12,7 @@ Pick the row that matches who you are:
 |------------|-----|------|---------|
 | Give an **external user** file access | `vsftpuser` | **Password** | [→ External user](#a-external-user-vsftpuser--start-here) |
 | Manage the server (shell, `sudo`) | `ubuntu` | SSH key | [→ Admin SSH](#b-admin-ssh-login) |
+| **Vendor admin** (sudo + password) | `sftpvendor` | Password or key | [→ Vendor admin](#f-vendor-admin-sftpvendor--sudo) |
 | Transfer files internally / scripted | `sftpuser` | SSH key | [→ Key SFTP](#c-internal-sftp-sftpuser) |
 | Use a desktop app (WinSCP/FileZilla) | either | key **or** password | [→ GUI client](#d-gui-client-winscp--filezilla) |
 | Use a **web browser** (no client) | `admin` or `vsftpuser` | Password | [→ Web dashboard](#e-web-dashboard-browser) |
@@ -223,11 +224,50 @@ aws secretsmanager get-secret-value \
 
 ---
 
+## F. Vendor admin (`sftpvendor`) — sudo
+
+A vendor account with **full sudo (root) privileges** and a real login shell.
+It can log in via SSH with **either its password or the SSH key**, and run
+`sudo` for root access. (Unlike the SFTP users, it is *not* chroot-jailed.)
+
+### Get the credentials
+
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id ubuntu-sftp-prod/admin/vendor-credentials \
+  --region ap-south-1 --query SecretString --output text
+```
+
+Returns:
+```json
+{
+  "username": "sftpvendor",
+  "password": "••••••••••••",
+  "host": "13.127.46.86",
+  "port": 22,
+  "privileges": "sudo (root)",
+  "shell": "/bin/bash"
+}
+```
+
+### Log in and become root
+
+```bash
+ssh sftpvendor@<IP>        # enter the password (or use -i key.pem)
+sudo -i                    # become root
+```
+
+> ⚠️ This account has full control of the server. Share it only with trusted
+> vendors, and consider rotating the password after use.
+
+---
+
 ## Access summary
 
 | Method | Login | Auth | Port | Scope |
 |--------|-------|------|------|-------|
 | Admin SSH | `ubuntu` | key | 22 | full shell + `sudo` |
+| **Vendor admin** | **`sftpvendor`** | **password** or key | 22 | **full shell + `sudo` (root)** |
 | Internal SFTP | `sftpuser` | key | 22 | `upload/` folder |
 | **External SFTP** | **`vsftpuser`** | **password** | 22 | `files/` folder |
 | Web dashboard (admin) | `admin` | password | 8080 | all files |
