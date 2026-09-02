@@ -79,6 +79,17 @@ variable "enable_elastic_ip" {
   default     = true
 }
 
+variable "rerun_user_data_on_change" {
+  description = <<-EOT
+    When true, Terraform re-applies the cloud-init script IN PLACE over SSH
+    whenever user_data changes — updating the EXISTING instance instead of
+    replacing it. Requires SSH (port 22) reachability as the 'ubuntu' user.
+    Set false to disable automatic re-runs (you'd then reboot manually to apply).
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "allowed_ssh_cidrs" {
   description = "List of CIDR blocks allowed to connect via SSH/SFTP (port 22). Restrict this in production."
   type        = list(string)

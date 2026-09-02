@@ -158,6 +158,7 @@ Files land on the dedicated **100 GiB** volume at `/srv/ftp/vsftpuser/files`.
 | `instance_type` | `t3.micro` | EC2 instance type |
 | `root_volume_size` | `20` | Root EBS size (GiB) |
 | `enable_elastic_ip` | `true` | Allocate a fixed Elastic IP for the server |
+| `rerun_user_data_on_change` | `true` | Apply config changes in place over SSH (no instance replacement) |
 | `allowed_ssh_cidrs` | `["0.0.0.0/0"]` | **Restrict this in production** |
 | `sftp_username` | `sftpuser` | Key-based SFTP account |
 | `sftp_upload_dir` | `upload` | Writable dir inside chroot |
@@ -172,6 +173,26 @@ Files land on the dedicated **100 GiB** volume at `/srv/ftp/vsftpuser/files`.
 | `web_dashboard_admin_user` | `admin` | Dashboard login username |
 | `web_dashboard_admin_password` | `""` (auto-gen) | Dashboard password; empty = strong random, stored in Secrets Manager |
 | `allowed_web_cidrs` | `["0.0.0.0/0"]` | CIDRs allowed to reach the dashboard — **restrict in production** |
+
+## In-place updates (no instance replacement)
+
+By default the module **updates the existing instance** instead of destroying and
+recreating it:
+
+- `user_data_replace_on_change = false` — editing the cloud-init script no longer
+  forces a new instance.
+- `lifecycle { ignore_changes = [ami] }` — a newer Canonical AMI won't trigger a
+  replacement either.
+- `rerun_user_data_on_change = true` — when the script changes, Terraform re-runs
+  it **over SSH on the running instance** (via a `null_resource`), so the new
+  configuration takes effect immediately without downtime or a new IP.
+
+This requires SSH (port 22) reachability as the `ubuntu` user (the module's key).
+Set `rerun_user_data_on_change = false` to skip the automatic re-run (then reboot
+the instance manually to apply script changes).
+
+> The EBS data volume, Elastic IP, and Secrets Manager entries are always
+> preserved across `apply`.
 
 ## Cleanup
 
