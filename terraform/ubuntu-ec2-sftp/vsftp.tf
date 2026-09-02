@@ -37,8 +37,8 @@ resource "aws_secretsmanager_secret_version" "vsftp" {
     host          = local.public_ip
     port          = 22
     protocol      = "SFTP"
-    upload_dir    = var.vsftp_upload_dir
+    shared_dir    = var.ftp_shared_dir
     dashboard_url = var.enable_web_dashboard ? "http://${local.public_ip}:${var.web_dashboard_port}" : "disabled"
-    note          = "Same credentials work for BOTH: (1) SFTP -> sftp ${var.vsftp_username}@${local.public_ip} then 'cd ${var.vsftp_upload_dir}', and (2) the web dashboard (scoped to your ${var.vsftp_upload_dir} folder)."
+    note          = "Same credentials work for BOTH: (1) SFTP -> sftp ${var.vsftp_username}@${local.public_ip} (you land directly in the shared '${var.ftp_shared_dir}' folder), and (2) the web dashboard. Files are at ${var.ftp_data_mount_point}/${var.ftp_shared_dir}/ on the server."
   })
 }

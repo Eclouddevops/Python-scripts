@@ -91,10 +91,14 @@ variable "sftp_username" {
   default     = "sftpuser"
 }
 
-variable "sftp_upload_dir" {
-  description = "Name of the writable upload directory inside the SFTP user's chroot home."
+variable "ftp_shared_dir" {
+  description = <<-EOT
+    Name of the single SHARED folder under the FTP mount that all SFTP users and
+    the web dashboard read/write. Files land at a short path:
+    <ftp_data_mount_point>/<ftp_shared_dir>/<yourfolder>  e.g. /srv/ftp/data/testwebsite
+  EOT
   type        = string
-  default     = "upload"
+  default     = "data"
 }
 
 ###############################################################################
@@ -138,12 +142,6 @@ variable "vsftp_password" {
   type        = string
   default     = ""
   sensitive   = true
-}
-
-variable "vsftp_upload_dir" {
-  description = "Writable upload/download directory (on the FTP data volume) for the external vsftp user."
-  type        = string
-  default     = "files"
 }
 
 ###############################################################################

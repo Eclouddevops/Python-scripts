@@ -2,25 +2,25 @@
 ###############################################################################
 # Cloud-init user_data: Configure Ubuntu + hardened SFTP + FTP data volume
 #
-# - Updates packages
+# Layout goal: files live at a SHORT shared path -> $FTP_MOUNT/$SHARED_DIR
+#   e.g. /srv/ftp/data/testwebsite
+#
 # - Formats & mounts the dedicated EBS data volume for FTP storage
-# - Creates a key-based chroot SFTP user (sftpuser)
-# - Creates a PASSWORD-based chroot SFTP user (vsftpuser) with upload/download,
-#   for external users (credentials come from Secrets Manager)
-# - Installs the File Browser web dashboard pointed at the FTP data volume
+# - All SFTP users are chrooted to $FTP_MOUNT and share ONE writable folder
+# - Key-based user (sftpuser) + password user (vsftpuser) both see the same data
+# - Vendor admin (sudo) + File Browser dashboard all point at the same folder
 ###############################################################################
 set -euxo pipefail
 
 SFTP_USER="${sftp_user}"
-UPLOAD_DIR="${upload_dir}"
 SFTP_GROUP="sftpusers"
 PUBLIC_KEY="${public_key}"
 
 # FTP data volume + external user settings
 FTP_MOUNT="${ftp_data_mount_point}"
+SHARED_DIR="${shared_dir}"                 # single shared folder name, e.g. "data"
 VSFTP_USER="${vsftp_user}"
 VSFTP_PASS='${vsftp_password}'
-VSFTP_UPLOAD_DIR="${vsftp_upload_dir}"
 
 # Vendor admin user (sudo) settings
 ENABLE_VENDOR="${enable_vendor_user}"
@@ -38,14 +38,10 @@ apt-get install -y openssh-server curl fail2ban ec2-instance-connect
 
 # ---------------------------------------------------------------------------
 # 2. Prepare & mount the dedicated EBS data volume for FTP storage
-#    On Nitro instances the extra volume shows up as an unpartitioned NVMe
-#    device with no filesystem. We locate the first such disk, format it once
-#    (only if empty), and mount it persistently via /etc/fstab (by UUID).
 # ---------------------------------------------------------------------------
 mkdir -p "$FTP_MOUNT"
 
-# Wait for the extra EBS volume to actually attach (the attachment is a separate
-# Terraform resource, so on first boot the device may not be present yet).
+# Wait for the extra EBS volume to attach (separate Terraform resource).
 echo "Waiting for the FTP data volume to attach..."
 for i in $(seq 1 30); do
   if lsblk -dpno NAME,FSTYPE,TYPE | awk '$3=="disk" && $2==""' | grep -q .; then
@@ -54,16 +50,10 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
-# Find a block device that has NO filesystem and NO partitions (our data disk).
+# Find a block device with NO filesystem and NO partitions (our data disk).
 DATA_DEV=""
 for dev in $(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}'); do
-  # Skip the root disk (the one that has a mounted partition).
   if lsblk -no MOUNTPOINT "$dev" | grep -q "/$"; then
-    continue
-  fi
-  # Skip disks that already have any child partition mounted at /
-  ROOTCHILD=$(lsblk -no MOUNTPOINT "$dev" | grep -c "^/$" || true)
-  if [ "$ROOTCHILD" -gt 0 ]; then
     continue
   fi
   FSTYPE=$(lsblk -no FSTYPE "$dev" | tr -d '[:space:]')
@@ -75,7 +65,6 @@ for dev in $(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}'); do
 done
 
 if [ -n "$DATA_DEV" ]; then
-  # Format only if there is no filesystem yet (preserves data on re-runs).
   if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
     mkfs.ext4 -L ftpdata "$DATA_DEV"
   fi
@@ -89,39 +78,40 @@ else
   echo "WARNING: no separate data volume found; using root disk for $FTP_MOUNT"
 fi
 
-# CRITICAL for SFTP chroot: the mount point itself must be owned by root and
-# NOT writable by group/other, or every chrooted SFTP login is rejected by sshd.
-chown root:root "$FTP_MOUNT"
-chmod 755 "$FTP_MOUNT"
-
 # ---------------------------------------------------------------------------
-# 3. Create SFTP group
+# 3. Chroot + shared folder layout
+#
+#    $FTP_MOUNT (/srv/ftp)            <- chroot root  : MUST be root:root 0755
+#      └── $SHARED_DIR (data)         <- shared files : writable by sftp group
+#
+#    Every SFTP user is chrooted to $FTP_MOUNT, so after login they see the
+#    "$SHARED_DIR" folder and files live at the short path:
+#        $FTP_MOUNT/$SHARED_DIR/<foldername>   e.g. /srv/ftp/data/testwebsite
 # ---------------------------------------------------------------------------
 groupadd -f "$SFTP_GROUP"
 
-# ---------------------------------------------------------------------------
-# 4. Key-based SFTP user (sftpuser) — chroot to its home on the data volume
-# ---------------------------------------------------------------------------
-SFTP_HOME="$FTP_MOUNT/$SFTP_USER"
+# Chroot root: owned by root, not group/other writable (sshd requirement).
+chown root:root "$FTP_MOUNT"
+chmod 755 "$FTP_MOUNT"
 
+# Single shared, group-writable data directory.
+SHARED_PATH="$FTP_MOUNT/$SHARED_DIR"
+mkdir -p "$SHARED_PATH"
+chown root:"$SFTP_GROUP" "$SHARED_PATH"
+chmod 2775 "$SHARED_PATH"      # setgid so new files inherit the group
+
+# ---------------------------------------------------------------------------
+# 4. Key-based SFTP user (sftpuser) — chrooted to $FTP_MOUNT
+# ---------------------------------------------------------------------------
 if ! id "$SFTP_USER" >/dev/null 2>&1; then
-  useradd -g "$SFTP_GROUP" -s /usr/sbin/nologin -d "$SFTP_HOME" -M "$SFTP_USER"
+  useradd -g "$SFTP_GROUP" -s /usr/sbin/nologin -d "$FTP_MOUNT" -M "$SFTP_USER"
 fi
 
-# Chroot root must be root-owned and not group/other-writable.
-mkdir -p "$SFTP_HOME"
-chown root:root "$SFTP_HOME"
-chmod 755 "$SFTP_HOME"
-
-mkdir -p "$SFTP_HOME/$UPLOAD_DIR"
-chown "$SFTP_USER":"$SFTP_GROUP" "$SFTP_HOME/$UPLOAD_DIR"
-chmod 755 "$SFTP_HOME/$UPLOAD_DIR"
-
-mkdir -p "$SFTP_HOME/.ssh"
-echo "$PUBLIC_KEY" > "$SFTP_HOME/.ssh/authorized_keys"
-chown -R "$SFTP_USER":"$SFTP_GROUP" "$SFTP_HOME/.ssh"
-chmod 700 "$SFTP_HOME/.ssh"
-chmod 600 "$SFTP_HOME/.ssh/authorized_keys"
+# authorized_keys must live OUTSIDE the chroot for a nologin sftp user; we place
+# it under /etc so sshd (running as root, before chroot) can read it.
+mkdir -p /etc/ssh/authorized_keys
+echo "$PUBLIC_KEY" > "/etc/ssh/authorized_keys/$SFTP_USER"
+chmod 644 "/etc/ssh/authorized_keys/$SFTP_USER"
 
 # Give the default 'ubuntu' admin user the same key.
 if [ -d /home/ubuntu/.ssh ]; then
@@ -130,50 +120,26 @@ if [ -d /home/ubuntu/.ssh ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Password-based external SFTP user (vsftpuser) — chroot on data volume
-#    Has full upload + download inside its writable directory.
+# 5. Password-based external SFTP user (vsftpuser) — chrooted to $FTP_MOUNT
+#    Shares the SAME $SHARED_DIR folder as sftpuser.
 # ---------------------------------------------------------------------------
-VSFTP_HOME="$FTP_MOUNT/$VSFTP_USER"
-
 if ! id "$VSFTP_USER" >/dev/null 2>&1; then
-  useradd -g "$SFTP_GROUP" -s /usr/sbin/nologin -d "$VSFTP_HOME" -M "$VSFTP_USER"
+  useradd -g "$SFTP_GROUP" -s /usr/sbin/nologin -d "$FTP_MOUNT" -M "$VSFTP_USER"
 fi
-
-# Set / update the password (from Secrets Manager value).
 echo "$VSFTP_USER:$VSFTP_PASS" | chpasswd
-
-# Chroot root: root-owned, not writable by the user.
-mkdir -p "$VSFTP_HOME"
-chown root:root "$VSFTP_HOME"
-chmod 755 "$VSFTP_HOME"
-
-# Writable upload/download directory owned by the user.
-mkdir -p "$VSFTP_HOME/$VSFTP_UPLOAD_DIR"
-chown "$VSFTP_USER":"$SFTP_GROUP" "$VSFTP_HOME/$VSFTP_UPLOAD_DIR"
-chmod 755 "$VSFTP_HOME/$VSFTP_UPLOAD_DIR"
 
 # ---------------------------------------------------------------------------
 # 5b. Vendor admin user (sudo / root privileges) — real shell + password login
-#     NOTE: a sudo user needs a normal shell and must NOT be in the chrooted
-#     SFTP group, so it is created separately as a full admin account.
 # ---------------------------------------------------------------------------
 if [ "$ENABLE_VENDOR" = "true" ]; then
   if ! id "$VENDOR_USER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$VENDOR_USER"
   fi
-
-  # Set / update the password.
   echo "$VENDOR_USER:$VENDOR_PASS" | chpasswd
-
-  # Grant full sudo (root) privileges.
   usermod -aG sudo "$VENDOR_USER"
+  # Also add to the sftp group so it can read/write the shared folder directly.
+  usermod -aG "$SFTP_GROUP" "$VENDOR_USER"
 
-  # Allow this specific user to use sudo without re-prompting is NOT enabled;
-  # standard sudo (password) is used. Enable passwordless sudo by uncommenting:
-  # echo "$VENDOR_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-$VENDOR_USER
-  # chmod 440 /etc/sudoers.d/90-$VENDOR_USER
-
-  # Also install the SSH public key so the vendor can log in with the key too.
   VENDOR_HOME="/home/$VENDOR_USER"
   mkdir -p "$VENDOR_HOME/.ssh"
   echo "$PUBLIC_KEY" > "$VENDOR_HOME/.ssh/authorized_keys"
@@ -181,12 +147,16 @@ if [ "$ENABLE_VENDOR" = "true" ]; then
   chmod 700 "$VENDOR_HOME/.ssh"
   chmod 600 "$VENDOR_HOME/.ssh/authorized_keys"
 
+  # Convenient symlink so the vendor reaches the shared folder quickly.
+  ln -sfn "$SHARED_PATH" "$VENDOR_HOME/ftp-data"
+
   echo "Vendor admin user '$VENDOR_USER' created with sudo privileges."
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Configure OpenSSH: internal-sftp + chroot for the group, and allow
-#    password auth ONLY for the SFTP group (admin SSH stays key-only).
+# 6. Configure OpenSSH: internal-sftp + chroot for the SFTP group.
+#    authorized_keys is read from /etc/ssh/authorized_keys/<user> (outside the
+#    chroot) so key-based login works for the nologin sftp users.
 # ---------------------------------------------------------------------------
 SSHD_CONFIG="/etc/ssh/sshd_config"
 
@@ -201,8 +171,9 @@ cat >> "$SSHD_CONFIG" <<EOF
 
 # ---- SFTP chroot configuration (managed by Terraform user_data) ----
 Match Group $SFTP_GROUP
-    ChrootDirectory %h
-    ForceCommand internal-sftp
+    ChrootDirectory $FTP_MOUNT
+    ForceCommand internal-sftp -d /$SHARED_DIR
+    AuthorizedKeysFile /etc/ssh/authorized_keys/%u
     AllowTcpForwarding no
     X11Forwarding no
     PasswordAuthentication yes
@@ -210,8 +181,7 @@ Match Group $SFTP_GROUP
 EOF
 fi
 
-# Allow password login for the vendor admin user (full shell, sudo). This is a
-# targeted Match block so global password auth stays off for everyone else.
+# Password login for the vendor admin user (full shell, sudo).
 if [ "$ENABLE_VENDOR" = "true" ] && ! grep -q "Match User $VENDOR_USER" "$SSHD_CONFIG"; then
 cat >> "$SSHD_CONFIG" <<EOF
 
@@ -222,22 +192,17 @@ Match User $VENDOR_USER
 EOF
 fi
 
-# Some Ubuntu cloud images ship a drop-in that force-disables password auth
-# globally. Our Match block re-enables it for the SFTP group, but make sure the
-# global default doesn't also disable keyboard-interactive in a way that blocks
-# the Match. (Admin 'ubuntu' login stays key-based regardless.)
-
 # ---------------------------------------------------------------------------
 # 7. Restart SSH to apply
 # ---------------------------------------------------------------------------
 sshd -t
 systemctl restart ssh || systemctl restart sshd
 
-echo "SFTP configured: key user '$SFTP_USER' + password user '$VSFTP_USER' (data volume: $FTP_MOUNT)"
+echo "SFTP configured. Shared folder: $SHARED_PATH (users land in /$SHARED_DIR)"
 
 # ---------------------------------------------------------------------------
-# 8. (Optional) Web Dashboard — File Browser, rooted at the FTP data volume
-#    so admins can see BOTH users' files from the browser.
+# 8. (Optional) Web Dashboard — File Browser, rooted at the SHARED folder so
+#    the browser and SFTP show exactly the same short paths.
 # ---------------------------------------------------------------------------
 if [ "${enable_web_dashboard}" = "true" ]; then
   echo "Installing File Browser web dashboard..."
@@ -245,7 +210,7 @@ if [ "${enable_web_dashboard}" = "true" ]; then
   DASHBOARD_PORT="${web_dashboard_port}"
   DASHBOARD_USER="${web_dashboard_user}"
   DASHBOARD_PASS='${web_dashboard_password}'
-  DATA_DIR="$FTP_MOUNT"
+  DATA_DIR="$SHARED_PATH"
   FB_CONFIG_DIR="/etc/filebrowser"
   FB_DB="$FB_CONFIG_DIR/filebrowser.db"
 
@@ -256,18 +221,14 @@ if [ "${enable_web_dashboard}" = "true" ]; then
   filebrowser -d "$FB_DB" config init
   filebrowser -d "$FB_DB" config set --address 0.0.0.0 --port "$DASHBOARD_PORT" --root "$DATA_DIR"
 
-  # --- Admin user: full access to the whole FTP volume ---
+  # Admin: full access to the shared folder.
   if ! filebrowser -d "$FB_DB" users add "$DASHBOARD_USER" "$DASHBOARD_PASS" --perm.admin 2>/dev/null; then
     filebrowser -d "$FB_DB" users update "$DASHBOARD_USER" --password "$DASHBOARD_PASS" --perm.admin
   fi
 
-  # --- External user (vsftpuser): SAME credentials as SFTP, but scoped in the
-  #     browser to ONLY their own files/ folder. Lets external users log in via
-  #     both SFTP and the web dashboard with one set of credentials. ---
-  VSFTP_SCOPE="$FTP_MOUNT/$VSFTP_USER/$VSFTP_UPLOAD_DIR"
-  mkdir -p "$VSFTP_SCOPE"
-  if ! filebrowser -d "$FB_DB" users add "$VSFTP_USER" "$VSFTP_PASS" --scope "$VSFTP_SCOPE" --perm.admin=false 2>/dev/null; then
-    filebrowser -d "$FB_DB" users update "$VSFTP_USER" --password "$VSFTP_PASS" --scope "$VSFTP_SCOPE" --perm.admin=false
+  # External user: same shared folder (single shared space, matching SFTP).
+  if ! filebrowser -d "$FB_DB" users add "$VSFTP_USER" "$VSFTP_PASS" --scope "$DATA_DIR" --perm.admin=false 2>/dev/null; then
+    filebrowser -d "$FB_DB" users update "$VSFTP_USER" --password "$VSFTP_PASS" --scope "$DATA_DIR" --perm.admin=false
   fi
 
   cat > /etc/systemd/system/filebrowser.service <<EOF

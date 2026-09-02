@@ -95,6 +95,11 @@ output "ftp_data_mount_point" {
   value       = var.ftp_data_mount_point
 }
 
+output "ftp_shared_path" {
+  description = "The short shared folder path on the server where all files land."
+  value       = "${var.ftp_data_mount_point}/${var.ftp_shared_dir}"
+}
+
 ###############################################################################
 # External FTP user (vsftpuser) outputs
 ###############################################################################
