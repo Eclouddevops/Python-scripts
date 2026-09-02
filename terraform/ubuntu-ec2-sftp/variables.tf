@@ -144,6 +144,43 @@ variable "web_hosting_port" {
 }
 
 ###############################################################################
+# Cloudflare integration
+###############################################################################
+
+variable "use_cloudflare" {
+  description = <<-EOT
+    When true, the website port (80) is restricted to Cloudflare's published IP
+    ranges instead of allowed_web_cidrs, so visitors must go through Cloudflare
+    (they can't bypass it by hitting the origin IP directly). nginx is also
+    configured to log the real visitor IP via Cloudflare's CF-Connecting-IP.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "cloudflare_ipv4_cidrs" {
+  description = "Cloudflare IPv4 ranges allowed to reach the web port. See https://www.cloudflare.com/ips/"
+  type        = list(string)
+  default = [
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22",
+  ]
+}
+
+###############################################################################
 # FTP Data Volume (dedicated EBS volume for FTP/SFTP storage)
 ###############################################################################
 
