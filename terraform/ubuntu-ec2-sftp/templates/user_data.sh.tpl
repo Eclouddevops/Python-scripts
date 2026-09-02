@@ -29,7 +29,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 apt-get update -y
 apt-get upgrade -y
-apt-get install -y openssh-server curl
+apt-get install -y openssh-server curl fail2ban ec2-instance-connect
 
 # ---------------------------------------------------------------------------
 # 2. Prepare & mount the dedicated EBS data volume for FTP storage
@@ -38,6 +38,16 @@ apt-get install -y openssh-server curl
 #    (only if empty), and mount it persistently via /etc/fstab (by UUID).
 # ---------------------------------------------------------------------------
 mkdir -p "$FTP_MOUNT"
+
+# Wait for the extra EBS volume to actually attach (the attachment is a separate
+# Terraform resource, so on first boot the device may not be present yet).
+echo "Waiting for the FTP data volume to attach..."
+for i in $(seq 1 30); do
+  if lsblk -dpno NAME,FSTYPE,TYPE | awk '$3=="disk" && $2==""' | grep -q .; then
+    break
+  fi
+  sleep 5
+done
 
 # Find a block device that has NO filesystem and NO partitions (our data disk).
 DATA_DEV=""
@@ -73,6 +83,11 @@ if [ -n "$DATA_DEV" ]; then
 else
   echo "WARNING: no separate data volume found; using root disk for $FTP_MOUNT"
 fi
+
+# CRITICAL for SFTP chroot: the mount point itself must be owned by root and
+# NOT writable by group/other, or every chrooted SFTP login is rejected by sshd.
+chown root:root "$FTP_MOUNT"
+chmod 755 "$FTP_MOUNT"
 
 # ---------------------------------------------------------------------------
 # 3. Create SFTP group
@@ -154,8 +169,14 @@ Match Group $SFTP_GROUP
     AllowTcpForwarding no
     X11Forwarding no
     PasswordAuthentication yes
+    KbdInteractiveAuthentication yes
 EOF
 fi
+
+# Some Ubuntu cloud images ship a drop-in that force-disables password auth
+# globally. Our Match block re-enables it for the SFTP group, but make sure the
+# global default doesn't also disable keyboard-interactive in a way that blocks
+# the Match. (Admin 'ubuntu' login stays key-based regardless.)
 
 # ---------------------------------------------------------------------------
 # 7. Restart SSH to apply
