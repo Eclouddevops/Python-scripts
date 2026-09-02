@@ -64,7 +64,7 @@ In the examples below, replace `<IP>` with your `elastic_ip`.
 
 This is the account you hand out to **external users**. It logs in with a
 **username + password** (no SSH key) and can **upload and download** inside its
-`files/` folder. The **same** credentials work for both **SFTP** and the
+shared `data/` folder. The **same** credentials work for both **SFTP** and the
 **web browser**.
 
 ### Step 1 — Get the credentials
@@ -97,7 +97,7 @@ Returns:
 ```bash
 sftp vsftpuser@<IP>
 # enter the password when prompted
-sftp> cd files            # the writable folder
+sftp> cd data             # the shared folder (files live at /srv/ftp/data)
 sftp> put report.pdf      # upload
 sftp> get data.csv        # download
 sftp> bye
@@ -106,7 +106,7 @@ sftp> bye
 ### Step 2 (alternative) — Connect via the browser
 
 Open the `dashboard_url` (e.g. `http://<IP>:8080`) and log in as `vsftpuser`
-with the same password. You'll see only your own `files/` folder.
+with the same password. You'll see the shared `data/` folder.
 
 > ⚠️ Give external parties **only** the `vsftpuser` credentials — never the SSH
 > key or the `ubuntu` admin login.
@@ -153,19 +153,19 @@ ssh -i key.pem ubuntu@<IP>
 ## C. Internal SFTP (`sftpuser`)
 
 A **key-based** SFTP account for internal or automated transfers. No shell,
-chroot-jailed to its `upload/` folder. Uses the **same `key.pem`** from
+chroot-jailed and lands in the shared `data/` folder. Uses the **same `key.pem`** from
 section B.
 
 ```bash
 sftp -i key.pem sftpuser@<IP>
-sftp> cd upload           # the writable folder
+sftp> cd data             # the shared folder (files live at /srv/ftp/data)
 sftp> put localfile.txt   # upload
 sftp> get remotefile.txt  # download
 sftp> bye
 ```
 
-> **Note:** you can only write inside `upload/`. The top level is read-only (a
-> security requirement of the chroot) — always `cd upload` first.
+> **Note:** you can only write inside `data/`. The chroot top level is read-only (a
+> security requirement of the chroot) — always `cd data` first.
 
 ---
 
@@ -180,7 +180,7 @@ Great for drag-and-drop. Works for both users — pick the auth that matches.
    - `vsftpuser` (external) → just type the **password** on the login screen.
    - `sftpuser` (key) → **Advanced → SSH → Authentication → Private key file** →
      select `key.pem` (WinSCP offers to convert to `.ppk` — click **Yes**).
-3. **Login**, then open your folder (`files/` for vsftpuser, `upload/` for sftpuser).
+3. **Login**, then open the shared `data/` folder.
 
 ### FileZilla (cross-platform)
 
@@ -213,7 +213,7 @@ aws secretsmanager get-secret-value \
 | Login | Password from | Sees |
 |-------|---------------|------|
 | `admin` | `.../dashboard/credentials` secret | **All** files on the volume |
-| `vsftpuser` | `.../ftp/vsftpuser-credentials` secret | **Only** its own `files/` folder |
+| `vsftpuser` | `.../ftp/vsftpuser-credentials` secret | The shared `data/` folder |
 
 1. Open the URL in your browser.
 2. Log in as `admin` (full access) or `vsftpuser` (external, scoped).
@@ -271,10 +271,10 @@ sudo -i                    # become root
 |--------|-------|------|------|-------|
 | Admin SSH | `ubuntu` | key | 22 | full shell + `sudo` |
 | **Vendor admin** | **`sftpvendor`** | **password** or key | 22 | **full shell + `sudo` (root)** |
-| Internal SFTP | `sftpuser` | key | 22 | `upload/` folder |
-| **External SFTP** | **`vsftpuser`** | **password** | 22 | `files/` folder |
+| Internal SFTP | `sftpuser` | key | 22 | shared `data/` folder |
+| **External SFTP** | **`vsftpuser`** | **password** | 22 | shared `data/` folder |
 | Web dashboard (admin) | `admin` | password | 8080 | all files |
-| Web dashboard (external) | `vsftpuser` | password | 8080 | `files/` folder |
+| Web dashboard (external) | `vsftpuser` | password | 8080 | shared `data/` folder |
 
 All files are stored on the dedicated **100 GiB** volume at `/srv/ftp`.
 
@@ -290,7 +290,7 @@ All files are stored on the dedicated **100 GiB** volume at `/srv/ftp`.
 | Password login rejected for `vsftpuser` | SSH still initialising, or wrong password | Wait a minute after apply; re-copy the password (watch for trailing spaces) |
 | `Connection timed out` (port 22) | Your IP not allowed | Add your IP/CIDR to `allowed_ssh_cidrs` and re-apply |
 | Dashboard won't load (port 8080) | Still starting, or IP blocked | Wait 1–2 min; add your IP to `allowed_web_cidrs` |
-| Can't upload via SFTP | Writing to the read-only chroot root | `cd files` (or `cd upload`) first |
+| Can't upload via SFTP | Writing to the read-only chroot root | `cd data` first |
 | `jq: command not found` | jq not installed | Use the Python one-liner in section B |
 
 ---

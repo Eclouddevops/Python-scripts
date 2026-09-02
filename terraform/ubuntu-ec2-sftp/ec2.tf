@@ -12,12 +12,11 @@ resource "aws_instance" "this" {
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
     sftp_user              = var.sftp_username
-    upload_dir             = var.sftp_upload_dir
     public_key             = trimspace(tls_private_key.ssh.public_key_openssh)
     ftp_data_mount_point   = var.ftp_data_mount_point
+    shared_dir             = var.ftp_shared_dir
     vsftp_user             = var.vsftp_username
     vsftp_password         = local.vsftp_password
-    vsftp_upload_dir       = var.vsftp_upload_dir
     enable_vendor_user     = var.enable_vendor_user ? "true" : "false"
     vendor_user            = var.vendor_username
     vendor_password        = local.vendor_password
