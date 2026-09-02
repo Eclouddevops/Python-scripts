@@ -164,12 +164,13 @@ variable "vendor_username" {
 
 variable "vendor_password" {
   description = <<-EOT
-    Password for the vendor admin user. This account has sudo (root) privileges
-    and a real login shell. Credentials are also stored in AWS Secrets Manager.
-    Prefer overriding this via a tfvars file / TF_VAR rather than committing it.
+    Password for the vendor admin user (sudo/root). Leave EMPTY (default) to
+    auto-generate a strong random password that is stored in AWS Secrets Manager
+    and retrieved from there — no plaintext password is kept in the code/Git.
+    Set a value only if you must use a specific password.
   EOT
   type        = string
-  default     = "sftpvendor@708"
+  default     = ""
   sensitive   = true
 }
 
