@@ -118,6 +118,32 @@ variable "ftp_shared_dir" {
 }
 
 ###############################################################################
+# Web hosting (nginx) — serve files uploaded via SFTP/dashboard over HTTP
+###############################################################################
+
+variable "enable_web_hosting" {
+  description = "Whether to install nginx and serve the FTP files over HTTP (port 80)."
+  type        = bool
+  default     = true
+}
+
+variable "web_hosting_subdir" {
+  description = <<-EOT
+    Sub-folder INSIDE the shared FTP folder to serve as the website root.
+    Example: "testwebsite" serves /srv/ftp/data/testwebsite at http://<ip>/.
+    Leave empty to serve the whole shared folder (/srv/ftp/data).
+  EOT
+  type        = string
+  default     = "testwebsite"
+}
+
+variable "web_hosting_port" {
+  description = "HTTP port nginx listens on for the hosted site."
+  type        = number
+  default     = 80
+}
+
+###############################################################################
 # FTP Data Volume (dedicated EBS volume for FTP/SFTP storage)
 ###############################################################################
 

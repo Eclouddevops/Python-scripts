@@ -29,6 +29,18 @@ resource "aws_security_group" "this" {
     }
   }
 
+  # Web hosting (nginx HTTP) — only added when enabled.
+  dynamic "ingress" {
+    for_each = var.enable_web_hosting ? [1] : []
+    content {
+      description = "HTTP website hosting (nginx)"
+      from_port   = var.web_hosting_port
+      to_port     = var.web_hosting_port
+      protocol    = "tcp"
+      cidr_blocks = var.allowed_web_cidrs
+    }
+  }
+
   egress {
     description = "Allow all outbound traffic"
     from_port   = 0

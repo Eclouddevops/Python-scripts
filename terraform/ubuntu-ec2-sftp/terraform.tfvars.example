@@ -40,3 +40,8 @@ web_dashboard_admin_user = "admin"
 web_dashboard_admin_password = ""
 # IMPORTANT: restrict this to your IP in production, e.g. ["203.0.113.10/32"]
 allowed_web_cidrs = ["0.0.0.0/0"]
+
+# --- Web hosting (serve uploaded files over HTTP via nginx) ---
+enable_web_hosting = true
+web_hosting_subdir = "testwebsite"   # sub-folder of /srv/ftp/data to serve; "" = whole folder
+web_hosting_port   = 80

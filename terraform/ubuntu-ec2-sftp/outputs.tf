@@ -110,6 +110,18 @@ output "ftp_shared_path" {
   value       = "${var.ftp_data_mount_point}/${var.ftp_shared_dir}"
 }
 
+output "website_url" {
+  description = "URL of the hosted website (nginx) when web hosting is enabled."
+  value = var.enable_web_hosting ? (
+    var.web_hosting_port == 80 ? "http://${local.public_ip}" : "http://${local.public_ip}:${var.web_hosting_port}"
+  ) : "disabled"
+}
+
+output "website_root_path" {
+  description = "Server directory served by nginx (upload files here to publish them)."
+  value       = var.enable_web_hosting ? "${var.ftp_data_mount_point}/${var.ftp_shared_dir}${var.web_hosting_subdir != "" ? "/${var.web_hosting_subdir}" : ""}" : "disabled"
+}
+
 ###############################################################################
 # External FTP user (vsftpuser) outputs
 ###############################################################################

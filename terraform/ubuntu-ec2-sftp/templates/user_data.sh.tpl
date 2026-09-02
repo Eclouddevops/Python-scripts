@@ -31,6 +31,11 @@ ENABLE_VENDOR="${enable_vendor_user}"
 VENDOR_USER="${vendor_user}"
 VENDOR_PASS='${vendor_password}'
 
+# Web hosting (nginx) settings
+ENABLE_WEB_HOSTING="${enable_web_hosting}"
+WEB_HOSTING_SUBDIR="${web_hosting_subdir}"
+WEB_HOSTING_PORT="${web_hosting_port}"
+
 export DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
@@ -289,6 +294,57 @@ EOF
   systemctl restart filebrowser
 
   echo "File Browser dashboard running on port $DASHBOARD_PORT (root: $DATA_DIR)"
+fi
+
+# ---------------------------------------------------------------------------
+# 9. (Optional) Web hosting with nginx — serve the uploaded files over HTTP.
+#    The web root points at the shared FTP folder (optionally a sub-folder),
+#    so anything uploaded via SFTP/dashboard is immediately live on the web.
+# ---------------------------------------------------------------------------
+if [ "$ENABLE_WEB_HOSTING" = "true" ]; then
+  echo "Installing nginx web hosting..."
+  apt-get install -y nginx
+
+  # Determine the web root: shared folder, optionally a sub-directory.
+  if [ -n "$WEB_HOSTING_SUBDIR" ]; then
+    WEB_ROOT="$SHARED_PATH/$WEB_HOSTING_SUBDIR"
+  else
+    WEB_ROOT="$SHARED_PATH"
+  fi
+  mkdir -p "$WEB_ROOT"
+
+  # nginx runs as user 'www-data'; add it to the sftp group and make the shared
+  # tree group-readable so nginx can serve files uploaded by the SFTP users.
+  usermod -aG "$SFTP_GROUP" www-data || true
+  chmod -R g+rX "$SHARED_PATH" || true
+  # Ensure the mount + shared path are traversable by www-data.
+  chmod o+x "$FTP_MOUNT" || true
+
+  # Site config: serve WEB_ROOT, try index.html then Index.html (case variants),
+  # and enable a simple autoindex so directories are browsable.
+  cat > /etc/nginx/sites-available/ftp-site <<EOF
+server {
+    listen $WEB_HOSTING_PORT default_server;
+    listen [::]:$WEB_HOSTING_PORT default_server;
+
+    root $WEB_ROOT;
+    index index.html Index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+        autoindex on;
+    }
+}
+EOF
+
+  ln -sfn /etc/nginx/sites-available/ftp-site /etc/nginx/sites-enabled/ftp-site
+  rm -f /etc/nginx/sites-enabled/default
+
+  nginx -t
+  systemctl enable nginx
+  systemctl restart nginx
+
+  echo "nginx serving $WEB_ROOT on port $WEB_HOSTING_PORT"
 fi
 
 echo "All setup complete."
